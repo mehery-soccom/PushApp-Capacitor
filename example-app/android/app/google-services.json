@@ -1,0 +1,106 @@
+{
+  "project_info": {
+    "project_number": "22930153229",
+    "firebase_url": "https://mehery-75d3b-default-rtdb.firebaseio.com",
+    "project_id": "mehery-75d3b",
+    "storage_bucket": "mehery-75d3b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22930153229:android:5d93e7450bd04240e4da44",
+        "android_client_info": {
+          "package_name": "com.example.example"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjeVU3mUXHjJgNObF3T6QctN15oR_Zo2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22930153229:android:eeb58af31dba9f16e4da44",
+        "android_client_info": {
+          "package_name": "com.mehery.admin.mehery_admin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjeVU3mUXHjJgNObF3T6QctN15oR_Zo2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22930153229:android:78c0a982ff72946be4da44",
+        "android_client_info": {
+          "package_name": "com.mehery.pushapp_android"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjeVU3mUXHjJgNObF3T6QctN15oR_Zo2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22930153229:android:883712853f2bf13ce4da44",
+        "android_client_info": {
+          "package_name": "com.pushapp.ionic"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjeVU3mUXHjJgNObF3T6QctN15oR_Zo2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22930153229:android:48dc3bd25315f699e4da44",
+        "android_client_info": {
+          "package_name": "meheryeventsender.example"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjeVU3mUXHjJgNObF3T6QctN15oR_Zo2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

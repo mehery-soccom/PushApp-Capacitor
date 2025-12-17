@@ -1,0 +1,6 @@
+<resources>
+    <!-- Custom PlaceholderView attributes -->
+    <declare-styleable name="MeSendPlaceholderView">
+        <attr name="placeholderId" format="string" />
+    </declare-styleable>
+</resources>

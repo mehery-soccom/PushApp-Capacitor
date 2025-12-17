@@ -1,5 +1,4 @@
 import { registerPlugin } from '@capacitor/core';
-
 import type { PushAppPlugin } from './definitions';
 
 const PushApp = registerPlugin<PushAppPlugin>('PushApp', {
