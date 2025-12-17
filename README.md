@@ -355,7 +355,7 @@ See the `example-app/` directory for a complete working example including:
 
 ## 🏷️ Version
 
-Current version: `0.0.1`
+Current version: `0.0.2`
 
 ---
 
