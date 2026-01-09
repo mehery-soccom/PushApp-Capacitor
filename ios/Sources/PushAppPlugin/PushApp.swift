@@ -419,6 +419,169 @@ public func unregisterPlaceholder(placeholderId: String) {
         }.resume()
     }
 
+    public func ping() {
+
+        guard let deviceId = getPersistentDeviceId() as String? else {
+            self.slackPrint("❌ Failed to get deviceId")
+            return
+        }
+
+        var contact_id = ""
+
+        if let savedUserId = UserDefaults.standard.string(forKey: "pushapp_user_id") {
+                contact_id = savedUserId + "_" + deviceId
+            } else {
+                self.slackPrint("❌ No saved userId for in-app polling")
+            }
+
+        let urlString = "\(serverUrl)/pushapp/api/ping"
+        guard let url = URL(string: urlString) else {
+            self.slackPrint("❌ Invalid URL: \(urlString)")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // Attach device headers
+        let deviceHeaders = getDeviceHeaders()
+        for (key, value) in deviceHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        self.slackPrint("📩 Attached device headers: \(deviceHeaders)")
+
+        let payload: [String: Any] = [
+            "channel_id": channelId,
+            "contact_id": contact_id
+        ]
+
+        if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            self.slackPrint("📤 Sending Login Request: \(urlString)")
+            self.slackPrint("📦 Payload: \(jsonString)")
+            request.httpBody = jsonData
+        } else {
+            self.slackPrint("❌ Failed to serialize login payload")
+            return
+        }
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                self.slackPrint("❌ Login request failed: \(error.localizedDescription)")
+                return
+            }
+
+            if let httpResponse = response as? HTTPURLResponse {
+                self.slackPrint("🌐 Login Response Status: \(httpResponse.statusCode)")
+                self.slackPrint("🌐 Headers: \(httpResponse.allHeaderFields)")
+            }
+
+            guard let data = data else {
+                self.slackPrint("❌ No response data received for login")
+                return
+            }
+
+            if let rawString = String(data: data, encoding: .utf8) {
+                self.slackPrint("📥 Raw Login Response: \(rawString)")
+            }
+
+            do {
+                let json = try JSONSerialization.jsonObject(with: data, options: [.allowFragments])
+                self.slackPrint("✅ Parsed Login JSON: \(json)")
+            } catch {
+                self.slackPrint("❌ Login JSON parse error: \(error)")
+            }
+        }.resume()
+    }
+
+
+    public func updateCustomerProfile(
+    cohorts: [String: Any],
+    additionalInfo: [String: Any]
+) {
+
+    guard let deviceId = getPersistentDeviceId() as String? else {
+        self.slackPrint("❌ Failed to get deviceId")
+        return
+    }
+
+    var contact_id = ""
+
+    if let savedUserId = UserDefaults.standard.string(forKey: "pushapp_user_id") {
+        contact_id = savedUserId + "_" + deviceId
+    } else {
+        self.slackPrint("❌ No saved userId for customer profile")
+    }
+
+    let urlString = "https://demo.pushapp.co.in/pushapp/api/v1/customer/profile"
+    guard let url = URL(string: urlString) else {
+        self.slackPrint("❌ Invalid URL: \(urlString)")
+        return
+    }
+self.slackPrint("❌ Valid URL: \(urlString)")
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+    // Attach device headers
+    let deviceHeaders = getDeviceHeaders()
+    for (key, value) in deviceHeaders {
+        request.setValue(value, forHTTPHeaderField: key)
+    }
+    self.slackPrint("📩 Attached device headers: \(deviceHeaders)")
+
+    let payload: [String: Any] = [
+        "contact_id": contact_id,
+        "code": contact_id,
+        "channel_id": channelId,
+        "cohorts": cohorts,               // free JSON
+        "additionalInfo": additionalInfo  // free JSON
+    ]
+
+    do {
+        let jsonData = try JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted)
+        request.httpBody = jsonData
+
+        if let jsonString = String(data: jsonData, encoding: .utf8) {
+            self.slackPrint("📤 Sending Customer Profile Request: \(urlString)")
+            self.slackPrint("📦 Payload: \(jsonString)")
+        }
+    } catch {
+        self.slackPrint("❌ Failed to serialize customer profile payload: \(error)")
+        return
+    }
+
+    URLSession.shared.dataTask(with: request) { data, response, error in
+        if let error = error {
+            self.slackPrint("❌ Customer profile request failed: \(error.localizedDescription)")
+            return
+        }
+
+        if let httpResponse = response as? HTTPURLResponse {
+            self.slackPrint("🌐 Profile Response Status: \(httpResponse.statusCode)")
+            self.slackPrint("🌐 Headers: \(httpResponse.allHeaderFields)")
+        }
+
+        guard let data = data else {
+            self.slackPrint("❌ No response data received for customer profile")
+            return
+        }
+
+        if let rawString = String(data: data, encoding: .utf8) {
+            self.slackPrint("📥 Raw Profile Response: \(rawString)")
+        }
+
+        do {
+            let json = try JSONSerialization.jsonObject(with: data, options: [.allowFragments])
+            self.slackPrint("✅ Parsed Profile JSON: \(json)")
+        } catch {
+            self.slackPrint("❌ Profile JSON parse error: \(error)")
+        }
+    }.resume()
+}
+
+
 
     private func connectSocket() {
         guard let id = userId else { return }
@@ -1965,120 +2128,136 @@ class InAppDisplay {
     }
 
 
-
+    private var pipWindow: UIWindow?
     @available(iOS 15.2, *)
-    private func showPictureInPicture(
-        messageId: String,
-        filterId: String,
-        _ html: String,
-        h_a: String = "flex_end",
-        v_a: String = "flex_end",
-        onClose: @escaping () -> Void
-    ) {
-        guard let context = self.context else {
-            self.slackPrint("❌ No context for PIP")
-            onClose()
-            return
-        }
+private func showPictureInPicture(
+    messageId: String,
+    filterId: String,
+    _ html: String,
+    h_a: String = "flex_end",
+    v_a: String = "flex_end",
+    onClose: @escaping () -> Void
+) {
+    DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+
         self.slackPrint("📢 Showing PIP")
 
-        DispatchQueue.main.async {
-            // Inner WKWebView
-            let pipView = WKWebView()
-            pipView.loadHTMLString(html, baseURL: nil)
-            pipView.translatesAutoresizingMaskIntoConstraints = false
-            pipView.layer.cornerRadius = 8
-            pipView.clipsToBounds = true
-            pipView.isOpaque = false
-            pipView.backgroundColor = .clear
-            pipView.scrollView.backgroundColor = .clear
-            pipView.scrollView.isScrollEnabled = false
-            pipView.scrollView.bounces = false
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.windowLevel = .alert + 1
+        window.backgroundColor = .clear
 
-            // Shadow container
-            let container = UIView()
-            container.translatesAutoresizingMaskIntoConstraints = false
-            container.backgroundColor = .clear
-            container.layer.cornerRadius = 8
-            container.layer.masksToBounds = false
-            container.layer.shadowColor = UIColor.black.cgColor
-            container.layer.shadowOpacity = 0.25
-            container.layer.shadowOffset = CGSize(width: 0, height: 4)
-            container.layer.shadowRadius = 8
+        let rootVC = UIViewController()
+        rootVC.view.backgroundColor = .clear
+        window.rootViewController = rootVC
+        window.makeKeyAndVisible()
 
-            // Embed WKWebView inside container
-            container.addSubview(pipView)
-            context.view.addSubview(container)
+        self.pipWindow = window
 
-            // Screen-based size (1/3 width and height)
-            let screenBounds = UIScreen.main.bounds
-            let pipWidth = screenBounds.width / 3
-            let pipHeight = screenBounds.height / 3
-
-            var constraints: [NSLayoutConstraint] = [
-                container.widthAnchor.constraint(equalToConstant: pipWidth),
-                container.heightAnchor.constraint(equalToConstant: pipHeight),
-
-                pipView.topAnchor.constraint(equalTo: container.topAnchor),
-                pipView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                pipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                pipView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
-            ]
-
-            // Vertical alignment
-            switch v_a {
-            case "flex_start":
-                constraints.append(container.topAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.topAnchor, constant: 20))
-            case "center":
-                constraints.append(container.centerYAnchor.constraint(equalTo: context.view.centerYAnchor))
-            case "flex_end":
-                constraints.append(container.bottomAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.bottomAnchor, constant: -20))
-            default:
-                constraints.append(container.bottomAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.bottomAnchor, constant: -20))
-            }
-
-            // Horizontal alignment
-            switch h_a {
-            case "flex_start":
-                constraints.append(container.leadingAnchor.constraint(equalTo: context.view.leadingAnchor, constant: 20))
-            case "center":
-                constraints.append(container.centerXAnchor.constraint(equalTo: context.view.centerXAnchor))
-            case "flex_end":
-                constraints.append(container.trailingAnchor.constraint(equalTo: context.view.trailingAnchor, constant: -20))
-            default:
-                constraints.append(container.trailingAnchor.constraint(equalTo: context.view.trailingAnchor, constant: -20))
-            }
-
-            NSLayoutConstraint.activate(constraints)
-
-            // Expand button
-            let expandButton = UIButton(type: .system)
-            let config = UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-            let image = UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: config)
-            expandButton.setImage(image, for: .normal)
-            expandButton.tintColor = .white
-            expandButton.backgroundColor = UIColor.black.withAlphaComponent(0.5)
-            expandButton.layer.cornerRadius = 15
-            expandButton.translatesAutoresizingMaskIntoConstraints = false
-
-            container.addSubview(expandButton)
-            NSLayoutConstraint.activate([
-                expandButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 5),
-                expandButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -5),
-                expandButton.widthAnchor.constraint(equalToConstant: 30),
-                expandButton.heightAnchor.constraint(equalToConstant: 30)
-            ])
-
-            if #available(iOS 14.0, *) {
-                expandButton.addAction(UIAction { [weak self] _ in
-                    self?.slackPrint("🔄 PIP expand button tapped")
-                    container.removeFromSuperview()
+        self.buildPIP(
+            hostView: rootVC.view,
+            messageId: messageId,
+            filterId: filterId,
+            html: html,
+            h_a: h_a,
+            v_a: v_a,
+            onClose: {
+                DispatchQueue.main.async {
+                    self.pipWindow?.isHidden = true
+                    self.pipWindow = nil
                     onClose()
-                    self?.showPopup(messageId: messageId, filterId: filterId,html, onClose: {})
-                }, for: .touchUpInside)
+                }
             }
-        }
+        )
     }
+}
+
+@MainActor
+private func buildPIP(
+    hostView: UIView,
+    messageId: String,
+    filterId: String,
+    html: String,
+    h_a: String,
+    v_a: String,
+    onClose: @escaping () -> Void
+) {
+    let container = UIView()
+    container.translatesAutoresizingMaskIntoConstraints = false
+    container.layer.cornerRadius = 8
+    container.layer.shadowColor = UIColor.black.cgColor
+    container.layer.shadowOpacity = 0.25
+    container.layer.shadowRadius = 8
+    container.layer.shadowOffset = CGSize(width: 0, height: 4)
+
+    let webView = WKWebView()
+    webView.translatesAutoresizingMaskIntoConstraints = false
+    webView.loadHTMLString(html, baseURL: nil)
+    webView.isOpaque = false
+    webView.backgroundColor = .clear
+    webView.scrollView.isScrollEnabled = false
+
+    container.addSubview(webView)
+    hostView.addSubview(container)
+
+    NSLayoutConstraint.activate([
+        container.widthAnchor.constraint(equalToConstant: UIScreen.main.bounds.width / 3),
+        container.heightAnchor.constraint(equalToConstant: UIScreen.main.bounds.height / 3),
+
+        webView.topAnchor.constraint(equalTo: container.topAnchor),
+        webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+        container.trailingAnchor.constraint(equalTo: hostView.trailingAnchor, constant: -20),
+        container.bottomAnchor.constraint(equalTo: hostView.bottomAnchor, constant: -40)
+    ])
+
+    hostView.layoutIfNeeded()
+    container.layer.shadowPath = UIBezierPath(
+        roundedRect: container.bounds,
+        cornerRadius: 8
+    ).cgPath
+
+    let expand = UIButton(type: .system)
+    expand.translatesAutoresizingMaskIntoConstraints = false
+    expand.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right"), for: .normal)
+    expand.tintColor = .white
+    expand.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+    expand.layer.cornerRadius = 15
+
+    container.addSubview(expand)
+
+    NSLayoutConstraint.activate([
+        expand.topAnchor.constraint(equalTo: container.topAnchor, constant: 5),
+        expand.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -5),
+        expand.widthAnchor.constraint(equalToConstant: 30),
+        expand.heightAnchor.constraint(equalToConstant: 30)
+    ])
+
+    expand.addAction(UIAction { _ in
+        container.removeFromSuperview()
+        DispatchQueue.main.async {
+                        self.slackPrint("🔄 PIP expand button tapped")
+                        container.removeFromSuperview()
+                        onClose()
+                        if #available(iOS 15.2, *) {
+                            self.showPopup(
+                                messageId: messageId,
+                                filterId: filterId,
+                                html,
+                                onClose: {}
+                            )
+                        } else {
+                            // Fallback on earlier versions
+                        }
+                    }
+    }, for: .touchUpInside)
+}
+
+
+
+
 
     
     private func showFloater(

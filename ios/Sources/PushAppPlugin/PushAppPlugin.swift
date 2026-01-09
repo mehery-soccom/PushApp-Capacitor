@@ -35,6 +35,32 @@ public class PushAppPlugin: CAPPlugin {
         ])
     }
 
+    @objc func ping(_ call: CAPPluginCall) {
+
+        PushApp.shared.ping()
+
+        call.resolve([
+            "status": "pinged"
+        ])
+    }
+
+    
+    @objc func saveUserData(_ call: CAPPluginCall) {
+        guard let additionalInfo = call.getAny("additionalInfo") else {
+            call.reject("additionalInfo is required")
+            return
+        }
+        guard let cohorts = call.getAny("cohorts") else {
+            call.reject("cohorts is required")
+            return
+        }
+        PushApp.shared.updateCustomerProfile(cohorts: cohorts as! [String : Any], additionalInfo: additionalInfo as! [String : Any])
+
+        call.resolve([
+            "status": "saved_user_data"
+        ])
+    }
+
     // MARK: - get device headers
     @objc func getDeviceHeaders(_ call: CAPPluginCall) {
         let headers = PushApp.shared.getDeviceHeaders()
