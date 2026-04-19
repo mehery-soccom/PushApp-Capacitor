@@ -65,9 +65,10 @@ Initialize the SDK in your app's entry point (e.g., `app.component.ts` or `main.
 ```typescript
 import { PushApp } from 'pushapp-ionic';
 
-// Initialize the SDK
+// Initialize the SDK — pass your channel id as App ID (`appId`).
+// Example: demo_1763369170735 → tenant subdomain is `demo`, channel id is the full string.
 await PushApp.initialize({
-  identifier: 'yourTenant#yourChannelId',
+  appId: 'demo_1763369170735',
   sandbox: true // or false for production
 });
 ```
@@ -77,6 +78,38 @@ To login the user:
 ```typescript
 await PushApp.login({
   userId: 'user_id'
+});
+```
+
+### Update Customer Profile (Recommended after login)
+
+Use `saveUserData` to create or update the customer profile on PushApp.
+Call this right after a successful login.
+
+```typescript
+// 1) Login user first
+await PushApp.login({
+  userId: 'user_id'
+});
+
+// 2) Build profile code = userId_deviceId
+const headers = await PushApp.getDeviceHeaders();
+const deviceId = headers['X-Device-ID'] ?? '';
+const code = `user_id_${deviceId}`;
+
+// 3) Send profile fields
+await PushApp.saveUserData({
+  code,
+  additionalInfo: {
+    dob: 946684800000,           // ms timestamp
+    gender: 'male',
+    expiry_date: 2208988800      // seconds timestamp
+  },
+  cohorts: {
+    plan: 'premium',
+    region: 'apac',
+    signup_source: 'mobile_app'
+  }
 });
 ```
 
@@ -243,7 +276,8 @@ ngOnDestroy() {
 Initialize the SDK.
 
 **Parameters:**
-- `identifier` (string, required): Your tenant and channel ID in format `tenant#channelId`
+- `appId` (string, required unless using legacy `identifier`): **App ID** — your full channel id (e.g. `demo_1763369170735`). The SDK derives the tenant subdomain from the substring before the first `_` (`demo` in this example). The channel id sent to APIs is this full App ID string.
+- `identifier` (string, optional legacy alias): Same value as `appId`; supported for backward compatibility only.
 - `sandbox` (boolean, optional): Set to `true` for sandbox environment, `false` for production
 
 **Returns:** `Promise<{ status: string }>`
@@ -277,6 +311,16 @@ Track the current page/view.
 Get device information headers.
 
 **Returns:** `Promise<{ [key: string]: string }>`
+
+#### `saveUserData(options)`
+Create or update customer profile data.
+
+**Parameters:**
+- `code` (string, required): Unique customer code. Recommended format: `userId_deviceId`
+- `additionalInfo` (object, required): Profile attributes (example: `dob`, `gender`, `expiry_date`)
+- `cohorts` (object, required): Segmentation/cohort attributes (example: `plan`, `region`)
+
+**Returns:** `Promise<{ status: string; success: boolean }>`
 
 ### Placeholder Methods
 

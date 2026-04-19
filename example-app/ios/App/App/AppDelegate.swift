@@ -8,67 +8,25 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
 
     var window: UIWindow?
 
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Set UNUserNotificationCenter delegate to handle foreground notifications
+    override init() {
+        super.init()
+        // Set delegate as early as possible so we receive notification taps even when app launches from a notification
         UNUserNotificationCenter.current().delegate = self
-      var additionalInfo: [String: Any] = [
-          "expiry_date": randomExpiryTimestampMoreThan5Years(),
-          "dob": randomDOB(),
-          "gender": randomGender()
-      ]
+        print("🔔 AppDelegate set as UNUserNotificationCenter delegate (init)")
+    }
 
-      // add more fields if needed
-      additionalInfo["source"] = "ios_app"
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        print("🔔 AppDelegate set as UNUserNotificationCenter delegate (didFinishLaunching)")
 
-      var cohorts: [String: Any] = [
-          "user_type": "test_user",
-          "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-      ]
-
-      if #available(iOS 15.2, *) {
-        DispatchQueue.main.asyncAfter(deadline: .now()+5, execute: {
-          PushApp.shared.updateCustomerProfile(cohorts: cohorts, additionalInfo: additionalInfo)
-        })
-        
-      } else {
-        // Fallback on earlier versions
-      }
-
-      
+        // Re-assert delegate after bridge loads so we are not overwritten by any plugin
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self = self else { return }
+            UNUserNotificationCenter.current().delegate = self
+            print("🔔 AppDelegate re-set as UNUserNotificationCenter delegate (post-bridge)")
+        }
         return true
     }
-  
-  
-  private func randomExpiryTimestampMoreThan5Years() -> Int {
-      let fiveYearsInSeconds: TimeInterval = 5 * 365 * 24 * 60 * 60
-      let extraRandomSeconds = TimeInterval.random(in: 0...(5 * 365 * 24 * 60 * 60))
-      let futureDate = Date().addingTimeInterval(fiveYearsInSeconds + extraRandomSeconds)
-      return Int(futureDate.timeIntervalSince1970)
-  }
-
-  private func randomDOB(minAge: Int = 18, maxAge: Int = 60) -> String {
-      let calendar = Calendar.current
-      let now = Date()
-
-      let minDate = calendar.date(byAdding: .year, value: -maxAge, to: now)!
-      let maxDate = calendar.date(byAdding: .year, value: -minAge, to: now)!
-
-      let randomTimeInterval = TimeInterval.random(
-          in: minDate.timeIntervalSince1970...maxDate.timeIntervalSince1970
-      )
-
-      let randomDate = Date(timeIntervalSince1970: randomTimeInterval)
-
-      let formatter = DateFormatter()
-      formatter.dateFormat = "yyyy-MM-dd" // common DOB format
-      return formatter.string(from: randomDate)
-  }
-
-  private func randomGender() -> String {
-      return Bool.random() ? "male" : "female"
-  }
-
-
     func applicationWillResignActive(_ application: UIApplication) {
         // Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
         // Use this method to pause ongoing tasks, disable timers, and invalidate graphics rendering callbacks. Games should use this method to pause the game.
@@ -84,6 +42,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        // Re-assert so we stay the notification delegate after returning from background
+        UNUserNotificationCenter.current().delegate = self
         // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
     }
 
@@ -138,6 +98,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        print("🔔 willPresent: notification received while app in foreground")
         let userInfo = notification.request.content.userInfo
         
         // Show notification banner even when app is in foreground
@@ -176,30 +137,48 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        print("🔔 didReceive: user tapped notification or CTA")
+        let id = response.notification.request.identifier
+        print("📩 Received notification with ID = \(id)")
+
         let userInfo = response.notification.request.content.userInfo
-        
-        // Handle notification tap
-        if #available(iOS 15.2, *) {
-            // Convert notification to dictionary format for PushApp
-            var notificationData: [String: Any] = [:]
-            
-            // Extract standard notification fields
-            if let title = userInfo["title"] as? String {
-                notificationData["title"] = title
-            }
-            if let body = userInfo["body"] as? String {
-                notificationData["body"] = body
-            }
-            
-            // Copy all userInfo data
-            for (key, value) in userInfo {
-              notificationData[key as! String] = value
-            }
-            
-            // Handle notification tap through PushApp if needed
-            // PushApp.shared.handleNotificationTap(notificationData)
+        let actionId = response.actionIdentifier
+        print("🧾 userInfo:", userInfo)
+
+        guard let token = userInfo["click_token"] as? String else {
+            print("❌ Missing click_token in payload")
+            completionHandler()
+            return
         }
-        
+
+        var event = "opened"
+        var ctaId: String? = nil
+
+        // Handle CTA button
+        if let buttons = userInfo["buttons"] as? [[String: Any]] {
+            if let matchingButton = buttons.first(where: { $0["id"] as? String == actionId }) {
+                event = "cta"
+                ctaId = matchingButton["id"] as? String
+
+                if let urlString = matchingButton["url"] as? String,
+                   let url = URL(string: urlString),
+                   UIApplication.shared.canOpenURL(url) {
+                    UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                }
+            }
+        }
+
+        // Track the event (opened or CTA)
+        if #available(iOS 15.2, *) {
+            PushApp.shared.trackPushNotificationEvent(token: token, event: event, ctaId: ctaId) { success in
+                if success {
+                    print("✅ Push track (\(event)) sent successfully.")
+                } else {
+                    print("❌ Failed to send push track (\(event)).")
+                }
+            }
+        }
+
         completionHandler()
     }
 

@@ -20,7 +20,9 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.res.Resources
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
@@ -108,7 +110,7 @@ class InAppDisplay(private val activity: Activity) {
                     }
 
                 code.contains("floater", ignoreCase = true) ->
-                    showFloater(htmlContent, draggable) {
+                    showFloater(messageId, filterId, htmlContent, draggable) {
                         handleDismiss(messageId,filterId)
                         showNext()
                     }
@@ -400,8 +402,7 @@ class InAppDisplay(private val activity: Activity) {
         }
     }
 
-//    @SuppressLint("SetJavaScriptEnabled")
-@SuppressLint("SetJavaScriptEnabled")
+@SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
 private fun showPictureInPicture(
     messageId: String,
     filterId : String,
@@ -415,7 +416,7 @@ private fun showPictureInPicture(
             setBackgroundColor(Color.TRANSPARENT)
         }
 
-        // === WebView Setup (with autoplay & permission fixes) ===
+        // === WebView Setup (with postMessage bridge for button redirection + autoplay) ===
         val webView = WebView(activity).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -439,16 +440,42 @@ private fun showPictureInPicture(
                 }
             }
 
+            addJavascriptInterface(object {
+                @JavascriptInterface
+                fun postMessage(msg: String) {
+                    activity.runOnUiThread {
+                        try {
+                            val json = JSONObject(msg)
+                            val data = json.optJSONObject("data")
+                            val value = data?.optString("value")
+                            if (value != null) {
+                                handleCtaClick(messageId, filterId, value)
+                                (pipWrapper.parent as? ViewGroup)?.removeView(pipWrapper)
+                                onClose()
+                            }
+                        } catch (e: JSONException) {
+                            Log.e("InAppDisplay", "Failed to parse PiP WebView message: $msg", e)
+                        }
+                    }
+                }
+            }, "InAppBridge")
+
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    // ✅ Inject autoplay patch with small delay
                     Handler(Looper.getMainLooper()).postDelayed({
                         evaluateJavascript(
                             """
                             (function() {
-                                console.log(">>> Injecting PiP Autoplay patch");
-
-                                // --- Autoplay for video tags ---
+                                console.log(">>> Injecting PiP handleClick + Autoplay patch");
+                                window.handleClick = function(eventType, lab, val) {
+                                    console.log(">>> PiP handleClick", eventType, lab, val);
+                                    var message = JSON.stringify({
+                                        event: eventType,
+                                        timestamp: Date.now(),
+                                        data: { url: "", label: lab, value: val }
+                                    });
+                                    InAppBridge.postMessage(message);
+                                };
                                 var videos = document.querySelectorAll('video');
                                 videos.forEach(function(v) {
                                     try {
@@ -456,19 +483,12 @@ private fun showPictureInPicture(
                                         v.playsInline = true;
                                         var playPromise = v.play();
                                         if (playPromise !== undefined) {
-                                            playPromise.then(_ => {
-                                                console.log("PiP video autoplay started");
-                                            }).catch(err => {
-                                                console.warn("PiP autoplay failed:", err);
-                                                setTimeout(() => v.play().catch(e => console.warn("Retry failed", e)), 500);
+                                            playPromise.then(_ => {}).catch(err => {
+                                                setTimeout(() => v.play().catch(function() {}), 500);
                                             });
                                         }
-                                    } catch(e) {
-                                        console.warn("PiP video patch error", e);
-                                    }
+                                    } catch(e) {}
                                 });
-
-                                // --- Autoplay for iframes (YouTube/Vimeo) ---
                                 var iframes = document.querySelectorAll('iframe[src*="youtube"],iframe[src*="vimeo"]');
                                 iframes.forEach(function(f) {
                                     try {
@@ -477,9 +497,7 @@ private fun showPictureInPicture(
                                             f.src = f.src + sep + "autoplay=1&mute=1&playsinline=1";
                                             var src = f.src; f.src = ''; f.src = src;
                                         }
-                                    } catch(e) {
-                                        console.warn("PiP iframe patch error", e);
-                                    }
+                                    } catch(e) {}
                                 });
                             })();
                             """.trimIndent(),
@@ -555,8 +573,8 @@ private fun showPictureInPicture(
 }
 
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun showFloater(html: String, draggable: Boolean?, onClose: () -> Unit) {
+    @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
+    private fun showFloater(messageId: String, filterId: String, html: String, draggable: Boolean?, onClose: () -> Unit) {
         println("Draggable: $draggable")
         activity.runOnUiThread {
             // === Draggable container ===
@@ -601,7 +619,7 @@ private fun showPictureInPicture(
                 setBackgroundColor(Color.TRANSPARENT)
             }
 
-            // === WebView setup ===
+            // === WebView setup (with postMessage bridge for button redirection + autoplay) ===
             val webView = WebView(activity).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
@@ -612,7 +630,6 @@ private fun showPictureInPicture(
                 setBackgroundColor(Color.TRANSPARENT)
                 setLayerType(View.LAYER_TYPE_HARDWARE, null) // ✅ Use hardware accel for video
 
-                // === WebChromeClient ===
                 webChromeClient = object : WebChromeClient() {
                     override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
                         Log.d("FloaterWebView", "console: ${message?.message()}")
@@ -626,59 +643,73 @@ private fun showPictureInPicture(
                     }
                 }
 
-                // === WebViewClient with delayed autoplay patch ===
+                addJavascriptInterface(object {
+                    @JavascriptInterface
+                    fun postMessage(msg: String) {
+                        activity.runOnUiThread {
+                            try {
+                                val json = JSONObject(msg)
+                                val data = json.optJSONObject("data")
+                                val value = data?.optString("value")
+                                if (value != null) {
+                                    handleCtaClick(messageId, filterId, value)
+                                    (container.parent as? ViewGroup)?.removeView(container)
+                                    onClose()
+                                }
+                            } catch (e: JSONException) {
+                                Log.e("InAppDisplay", "Failed to parse Floater WebView message: $msg", e)
+                            }
+                        }
+                    }
+                }, "InAppBridge")
+
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
-                        // Inject autoplay patch with slight delay to ensure DOM ready
                         Handler(Looper.getMainLooper()).postDelayed({
                             evaluateJavascript(
                                 """
-                            (function() {
-                                console.log(">>> Injecting Floater Autoplay patch (delayed)");
-
-                                // --- Force autoplay for all <video> tags ---
-                                var videos = document.querySelectorAll('video');
-                                videos.forEach(function(v) {
-                                    try {
-                                        v.muted = true;
-                                        v.playsInline = true;
-                                        var playPromise = v.play();
-                                        if (playPromise !== undefined) {
-                                            playPromise.then(_ => {
-                                                console.log("Floater video autoplay started");
-                                            }).catch(err => {
-                                                console.warn("Floater autoplay failed:", err);
-                                                setTimeout(() => v.play().catch(e => console.warn("Retry failed", e)), 500);
-                                            });
-                                        }
-                                    } catch(e) {
-                                        console.warn("Floater autoplay error", e);
-                                    }
-                                });
-
-                                // --- Handle iframe embeds (YouTube, Vimeo, etc.) ---
-                                var iframes = document.querySelectorAll('iframe[src*="youtube"],iframe[src*="vimeo"]');
-                                iframes.forEach(function(f) {
-                                    try {
-                                        if (f.src.indexOf("autoplay=1") === -1) {
-                                            var sep = f.src.indexOf("?") === -1 ? "?" : "&";
-                                            f.src = f.src + sep + "autoplay=1&mute=1&playsinline=1";
-                                            // Force reload after param change
-                                            var src = f.src; f.src = ''; f.src = src;
-                                        }
-                                    } catch(e) {
-                                        console.warn("Iframe autoplay patch error", e);
-                                    }
-                                });
-                            })();
-                            """.trimIndent(),
+                                (function() {
+                                    console.log(">>> Injecting Floater handleClick + Autoplay patch");
+                                    window.handleClick = function(eventType, lab, val) {
+                                        console.log(">>> Floater handleClick", eventType, lab, val);
+                                        var message = JSON.stringify({
+                                            event: eventType,
+                                            timestamp: Date.now(),
+                                            data: { url: "", label: lab, value: val }
+                                        });
+                                        InAppBridge.postMessage(message);
+                                    };
+                                    var videos = document.querySelectorAll('video');
+                                    videos.forEach(function(v) {
+                                        try {
+                                            v.muted = true;
+                                            v.playsInline = true;
+                                            var playPromise = v.play();
+                                            if (playPromise !== undefined) {
+                                                playPromise.then(_ => {}).catch(err => {
+                                                    setTimeout(() => v.play().catch(function() {}), 500);
+                                                });
+                                            }
+                                        } catch(e) {}
+                                    });
+                                    var iframes = document.querySelectorAll('iframe[src*="youtube"],iframe[src*="vimeo"]');
+                                    iframes.forEach(function(f) {
+                                        try {
+                                            if (f.src.indexOf("autoplay=1") === -1) {
+                                                var sep = f.src.indexOf("?") === -1 ? "?" : "&";
+                                                f.src = f.src + sep + "autoplay=1&mute=1&playsinline=1";
+                                                var src = f.src; f.src = ''; f.src = src;
+                                            }
+                                        } catch(e) {}
+                                    });
+                                })();
+                                """.trimIndent(),
                                 null
                             )
                         }, 500)
                     }
                 }
 
-                // Use https://example.com as baseURL to avoid mixed-content issues
                 loadDataWithBaseURL("https://example.com", html, "text/html", "UTF-8", null)
 
                 layoutParams = FrameLayout.LayoutParams(
@@ -795,7 +826,22 @@ private fun showPictureInPicture(
         )
     }
 
-    fun handleCtaClick(messageId: String,filterId : String, ctaId: String) {
+    /**
+     * Handle CTA button click: open URL if ctaId is a valid URL (redirection), then track the event.
+     * Matches iOS ScriptMessageHandler behavior for roadblock, banner, bottom sheet, etc.
+     */
+    fun handleCtaClick(messageId: String, filterId: String, ctaId: String) {
+        // Redirection: if ctaId is a valid URL, open it (same as iOS)
+        try {
+            val uri = Uri.parse(ctaId)
+            if (uri.scheme != null && (uri.scheme == "http" || uri.scheme == "https" || uri.scheme == "intent" || uri.scheme == "market")) {
+                val intent = Intent(Intent.ACTION_VIEW, uri)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                activity.startActivity(intent)
+            }
+        } catch (e: Exception) {
+            Log.w("InAppDisplay", "Could not open CTA as URL: $ctaId", e)
+        }
         PushApp.getInstance().trackInAppEvent(
             messageId = messageId,
             filterId = filterId,

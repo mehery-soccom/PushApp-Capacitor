@@ -11,15 +11,20 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.util.Iterator;
 import java.util.Map;
 
+import kotlin.Unit;
+
 @CapacitorPlugin(name = "PushApp")
 public class PushAppPlugin extends Plugin {
 
     // MARK: - initialize
     @PluginMethod
     public void initialize(PluginCall call) {
-        String identifier = call.getString("identifier");
-        if (identifier == null) {
-            call.reject("identifier is required");
+        String appId = call.getString("appId");
+        if (appId == null) {
+            appId = call.getString("identifier");
+        }
+        if (appId == null) {
+            call.reject("appId is required (channel id / App ID; use identifier only as a deprecated alias)");
             return;
         }
 
@@ -32,7 +37,7 @@ public class PushAppPlugin extends Plugin {
             return;
         }
 
-        PushApp.Companion.getInstance().initialize(context, identifier, sandbox);
+        PushApp.Companion.getInstance().initialize(context, appId, sandbox);
 
         // Set current activity if available
         Activity activity = getActivity();
@@ -59,6 +64,62 @@ public class PushAppPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("status", "logged_in");
         call.resolve(ret);
+    }
+
+    // MARK: - save user data (create or update customer profile)
+    @PluginMethod
+    public void saveUserData(PluginCall call) {
+        String code = call.getString("code");
+        if (code == null || code.isEmpty()) {
+            call.reject("code is required (e.g. userId_deviceId)");
+            return;
+        }
+
+        JSObject additionalInfo = call.getObject("additionalInfo");
+        JSObject cohorts = call.getObject("cohorts");
+        if (additionalInfo == null || cohorts == null) {
+            call.reject("additionalInfo and cohorts are required and must be objects");
+            return;
+        }
+
+        java.util.Map<String, Object> additionalInfoMap = new java.util.HashMap<>();
+        try {
+            for (Iterator<String> it = additionalInfo.keys(); it.hasNext(); ) {
+                String key = it.next();
+                additionalInfoMap.put(key, additionalInfo.get(key));
+            }
+        } catch (Exception e) {
+            call.reject("Failed to parse additionalInfo: " + e.getMessage());
+            return;
+        }
+
+        java.util.Map<String, Object> cohortsMap = new java.util.HashMap<>();
+        try {
+            for (Iterator<String> it = cohorts.keys(); it.hasNext(); ) {
+                String key = it.next();
+                cohortsMap.put(key, cohorts.get(key));
+            }
+        } catch (Exception e) {
+            call.reject("Failed to parse cohorts: " + e.getMessage());
+            return;
+        }
+
+        PushApp.Companion.getInstance().createOrUpdateCustomerProfile(
+            code,
+            additionalInfoMap,
+            cohortsMap,
+            success -> {
+                if (success) {
+                    JSObject ret = new JSObject();
+                    ret.put("status", "saved_user_data");
+                    ret.put("success", true);
+                    call.resolve(ret);
+                } else {
+                    call.reject("Customer profile update failed");
+                }
+                return Unit.INSTANCE;
+            }
+        );
     }
 
     // MARK: - get device headers
@@ -275,5 +336,29 @@ public class PushAppPlugin extends Plugin {
                 call.reject("Failed to unregister tooltip target: " + e.getMessage());
             }
         });
+    }
+
+    // MARK: - track push notification event
+    @PluginMethod
+    public void trackPushNotificationEvent(PluginCall call) {
+        String token = call.getString("token");
+        if (token == null || token.isEmpty()) {
+            call.reject("token is required");
+            return;
+        }
+
+        String event = call.getString("event");
+        if (event == null || event.isEmpty()) {
+            call.reject("event is required");
+            return;
+        }
+
+        String ctaId = call.getString("ctaId");
+
+        PushApp.Companion.getInstance().trackNotificationEvent(token, event, ctaId);
+
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
     }
 }

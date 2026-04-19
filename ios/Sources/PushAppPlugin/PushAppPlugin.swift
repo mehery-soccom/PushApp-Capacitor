@@ -7,14 +7,15 @@ public class PushAppPlugin: CAPPlugin {
 
     // MARK: - initialize
     @objc func initialize(_ call: CAPPluginCall) {
-        guard let identifier = call.getString("identifier") else {
-            call.reject("identifier is required")
+        let appId = call.getString("appId") ?? call.getString("identifier")
+        guard let appId = appId else {
+            call.reject("appId is required (channel id / App ID; identifier is accepted as a deprecated alias)")
             return
         }
 
         let sandbox = call.getBool("sandbox") ?? false
 
-        PushApp.shared.initialize(identifier: identifier, sandbox: sandbox)
+        PushApp.shared.initialize(appId: appId, sandbox: sandbox)
 
         call.resolve([
             "status": "initialized"
@@ -46,6 +47,13 @@ public class PushAppPlugin: CAPPlugin {
 
     
     @objc func saveUserData(_ call: CAPPluginCall) {
+        print("🔔 saveUserData called with code: \(call.getString("code"))")
+        print("🔔 saveUserData called with additionalInfo: \(call.getAny("additionalInfo"))")
+        print("🔔 saveUserData called with cohorts: \(call.getAny("cohorts"))")
+        guard let code = call.getString("code") else {
+            call.reject("code is required (e.g. userId_deviceId)")
+            return
+        }
         guard let additionalInfo = call.getAny("additionalInfo") else {
             call.reject("additionalInfo is required")
             return
@@ -54,11 +62,18 @@ public class PushAppPlugin: CAPPlugin {
             call.reject("cohorts is required")
             return
         }
-        PushApp.shared.updateCustomerProfile(cohorts: cohorts as! [String : Any], additionalInfo: additionalInfo as! [String : Any])
-
-        call.resolve([
-            "status": "saved_user_data"
-        ])
+        guard let additionalInfoDict = additionalInfo as? [String: Any],
+              let cohortsDict = cohorts as? [String: Any] else {
+            call.reject("additionalInfo and cohorts must be objects")
+            return
+        }
+        PushApp.shared.updateCustomerProfile(code: code, cohorts: cohortsDict, additionalInfo: additionalInfoDict) { success in
+            if success {
+                call.resolve(["status": "saved_user_data", "success": true])
+            } else {
+                call.reject("Customer profile update failed")
+            }
+        }
     }
 
     // MARK: - get device headers
@@ -182,5 +197,22 @@ public class PushAppPlugin: CAPPlugin {
         call.resolve([
             "status": "tooltip_target_unregistered"
         ])
+    }
+
+    // MARK: - track push notification event
+    @objc func trackPushNotificationEvent(_ call: CAPPluginCall) {
+        guard let token = call.getString("token") else {
+            call.reject("token is required")
+            return
+        }
+        guard let event = call.getString("event") else {
+            call.reject("event is required")
+            return
+        }
+        let ctaId = call.getString("ctaId")
+
+        PushApp.shared.trackPushNotificationEvent(token: token, event: event, ctaId: ctaId) { success in
+            call.resolve(["success": success])
+        }
     }
 }

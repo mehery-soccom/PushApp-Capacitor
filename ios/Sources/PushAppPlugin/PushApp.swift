@@ -28,21 +28,23 @@ public class PushApp: NSObject {
 
     private override init() {}
 
-    public func initialize(identifier: String, sandbox: Bool = false) {
+    public func initialize(appId: String, sandbox: Bool = false) {
         self.sandbox = sandbox
         guard let context = self.topViewController() else {
                 self.slackPrint("⚠️ Unable to find top view controller")
                 return
             }
         self.currentContext = context
-        let parts = identifier.split(separator: "$")
-        if parts.count == 2 {
-            self.tenant = String(parts[0])
-            self.channelId = String(parts[1])
+        // App ID is the full channel id (e.g. demo_1763369170735). Tenant is the prefix before the first '_'.
+        if let u = appId.firstIndex(of: "_"),
+           u > appId.startIndex,
+           u < appId.index(before: appId.endIndex) {
+            self.tenant = String(appId[..<u])
+            self.channelId = appId
             self.slackPrint(self.tenant)
             self.slackPrint(self.channelId)
         } else {
-            self.slackPrint("Invalid identifier format")
+            self.slackPrint("Invalid app id: expected channel id with tenant prefix before first '_', e.g. demo_1763369170735")
         }
         
         if sandbox {
@@ -268,7 +270,7 @@ public func unregisterPlaceholder(placeholderId: String) {
             return
         }
 
-        let urlString = "\(serverUrl)/pushapp/api/register"
+        let urlString = "\(serverUrl)/pushapp/api/device/register"
         guard let url = URL(string: urlString) else {
             self.slackPrint("❌ Invalid URL: \(urlString)")
             return
@@ -357,7 +359,7 @@ public func unregisterPlaceholder(placeholderId: String) {
             return
         }
 
-        let urlString = "\(serverUrl)/pushapp/api/register/user"
+        let urlString = "\(serverUrl)/pushapp/api/device/link"
         guard let url = URL(string: urlString) else {
             self.slackPrint("❌ Invalid URL: \(urlString)")
             return
@@ -496,90 +498,80 @@ public func unregisterPlaceholder(placeholderId: String) {
     }
 
 
+    /// Creates or updates customer profile (PUT). Call after login with the same `code` your app uses (e.g. userId_deviceId).
+    /// - Parameters:
+    ///   - code: Customer code (e.g. userId_deviceId), required by the API.
+    ///   - cohorts: Free JSON for cohort data.
+    ///   - additionalInfo: Free JSON for additional profile data.
+    ///   - completion: Called on main thread with success true if status 2xx, else false.
     public func updateCustomerProfile(
-    cohorts: [String: Any],
-    additionalInfo: [String: Any]
-) {
-
-    guard let deviceId = getPersistentDeviceId() as String? else {
-        self.slackPrint("❌ Failed to get deviceId")
-        return
-    }
-
-    var contact_id = ""
-
-    if let savedUserId = UserDefaults.standard.string(forKey: "pushapp_user_id") {
-        contact_id = savedUserId + "_" + deviceId
-    } else {
-        self.slackPrint("❌ No saved userId for customer profile")
-    }
-
-    let urlString = "https://demo.pushapp.co.in/pushapp/api/v1/customer/profile"
-    guard let url = URL(string: urlString) else {
-        self.slackPrint("❌ Invalid URL: \(urlString)")
-        return
-    }
-self.slackPrint("❌ Valid URL: \(urlString)")
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-    // Attach device headers
-    let deviceHeaders = getDeviceHeaders()
-    for (key, value) in deviceHeaders {
-        request.setValue(value, forHTTPHeaderField: key)
-    }
-    self.slackPrint("📩 Attached device headers: \(deviceHeaders)")
-
-    let payload: [String: Any] = [
-        "contact_id": contact_id,
-        "code": contact_id,
-        "channel_id": channelId,
-        "cohorts": cohorts,               // free JSON
-        "additionalInfo": additionalInfo  // free JSON
-    ]
-
-    do {
-        let jsonData = try JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted)
-        request.httpBody = jsonData
-
-        if let jsonString = String(data: jsonData, encoding: .utf8) {
-            self.slackPrint("📤 Sending Customer Profile Request: \(urlString)")
-            self.slackPrint("📦 Payload: \(jsonString)")
-        }
-    } catch {
-        self.slackPrint("❌ Failed to serialize customer profile payload: \(error)")
-        return
-    }
-
-    URLSession.shared.dataTask(with: request) { data, response, error in
-        if let error = error {
-            self.slackPrint("❌ Customer profile request failed: \(error.localizedDescription)")
+        code: String,
+        cohorts: [String: Any],
+        additionalInfo: [String: Any],
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        guard !code.isEmpty else {
+            self.slackPrint("❌ code is required for customer profile")
+            DispatchQueue.main.async { completion?(false) }
             return
         }
 
-        if let httpResponse = response as? HTTPURLResponse {
-            self.slackPrint("🌐 Profile Response Status: \(httpResponse.statusCode)")
-            self.slackPrint("🌐 Headers: \(httpResponse.allHeaderFields)")
-        }
-
-        guard let data = data else {
-            self.slackPrint("❌ No response data received for customer profile")
+        let urlString = "\(serverUrl)/pushapp/api/v1/customer/profile?code=\(code.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? code)"
+        guard let url = URL(string: urlString) else {
+            self.slackPrint("❌ Invalid URL: \(urlString)")
+            DispatchQueue.main.async { completion?(false) }
             return
         }
+        self.slackPrint("✅ Customer profile URL: \(urlString)")
 
-        if let rawString = String(data: data, encoding: .utf8) {
-            self.slackPrint("📥 Raw Profile Response: \(rawString)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let deviceHeaders = getDeviceHeaders()
+        for (key, value) in deviceHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
         }
+        self.slackPrint("📩 Attached device headers: \(deviceHeaders)")
+
+        let payload: [String: Any] = [
+            "additionalInfo": additionalInfo,
+            "cohorts": cohorts,
+            "code": code
+        ]
 
         do {
-            let json = try JSONSerialization.jsonObject(with: data, options: [.allowFragments])
-            self.slackPrint("✅ Parsed Profile JSON: \(json)")
+            let jsonData = try JSONSerialization.data(withJSONObject: payload, options: [])
+            request.httpBody = jsonData
+
+            if let jsonString = String(data: jsonData, encoding: .utf8) {
+                self.slackPrint("📤 Sending Customer Profile PUT: \(urlString)")
+                self.slackPrint("📦 Payload: \(jsonString)")
+            }
         } catch {
-            self.slackPrint("❌ Profile JSON parse error: \(error)")
+            self.slackPrint("❌ Failed to serialize customer profile payload: \(error)")
+            DispatchQueue.main.async { completion?(false) }
+            return
         }
-    }.resume()
-}
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            let success: Bool
+            if let error = error {
+                self.slackPrint("❌ Customer profile request failed: \(error.localizedDescription)")
+                success = false
+            } else if let httpResponse = response as? HTTPURLResponse {
+                self.slackPrint("🌐 Profile Response Status: \(httpResponse.statusCode)")
+                success = (200..<300).contains(httpResponse.statusCode)
+                if !success, let data = data, let raw = String(data: data, encoding: .utf8) {
+                    self.slackPrint("❌ Profile response body: \(raw)")
+                }
+            } else {
+                success = false
+            }
+            DispatchQueue.main.async { completion?(success) }
+        }.resume()
+    }
 
 
 
@@ -837,29 +829,36 @@ self.slackPrint("❌ Valid URL: \(urlString)")
                                                 let template = notification["template"] as? [String : Any]
                                                 let style = template?["style"] as? [String: Any]
                                                 
-                                                // ⭐️ NEW ATTRIBUTE EXTRACTION LOGIC
-                                                let line1 = style?["line_1"] as? String
-                                                let line2 = style?["line_2"] as? String
-                                                let iconHtml = style?["line1_icon"] as? String // e.g., "&#9888;"
+                                                let line1 = style?["line_1"] as? String ?? ""
+                                                let richline1 = style?["richline_1"] as? String
+                                                let line2 = style?["line_2"] as? String ?? ""
+                                                let iconHtml = style?["line1_icon"] as? String
                                                 let line1Color = style?["line1_font_color"] as? String
                                                 let line2Color = style?["line2_font_color"] as? String
+                                                let bgColorHex = style?["bg_color"] as? String ?? "#fffffe"
+                                                let line2FontSize: Double = (style?["line2_font_size"] as? NSNumber)?.doubleValue ?? (style?["line2_font_size"] as? Int).map { Double($0) } ?? 12
+                                                let line2TextStyles = style?["line2_text_styles"] as? [String]
+                                                let line1FontSize: Double = (style?["line1_font_size"] as? NSNumber)?.doubleValue ?? (style?["line1_font_size"] as? Int).map { Double($0) } ?? 14
+                                                let line1TextStyles = style?["line1_text_styles"] as? [String]
                                                 
-                                                // Get the coordinates from the stored rects
                                                 if let compareId = compareId,
-                                                   let l1 = line1,
-                                                   let l2 = line2,
                                                    let messageId = messageId,
                                                    let targetRect = self.tooltipTargetRects[compareId] {
                                                     
                                                     self.slackPrint("🔹 Rendering TOOLTIP: \(compareId) at \(targetRect)")
                                                     
-                                                    // ⭐️ Call updated render function
                                                     self.renderTooltipContent(
-                                                        line1: l1,
-                                                        line2: l2,
+                                                        line1: line1,
+                                                        richline1: richline1,
+                                                        line2: line2,
                                                         iconHtml: iconHtml,
                                                         line1Color: line1Color,
                                                         line2Color: line2Color,
+                                                        line1FontSize: line1FontSize,
+                                                        line2FontSize: line2FontSize,
+                                                        line1TextStyles: line1TextStyles,
+                                                        line2TextStyles: line2TextStyles,
+                                                        bgColorHex: bgColorHex,
                                                         messageId: messageId,
                                                         targetRect: targetRect
                                                     )
@@ -887,37 +886,44 @@ self.slackPrint("❌ Valid URL: \(urlString)")
     // Inside PushApp class (add this alongside renderInlineHtml)
 
     private func renderTooltipContent(line1: String,
+                                      richline1: String?,
                                       line2: String,
                                       iconHtml: String?,
                                       line1Color: String?,
                                       line2Color: String?,
+                                      line1FontSize: Double,
+                                      line2FontSize: Double,
+                                      line1TextStyles: [String]?,
+                                      line2TextStyles: [String]?,
+                                      bgColorHex: String,
                                       messageId: String,
                                       targetRect: CGRect) {
-        
-        
-        guard let context = self.topViewController() else {
+        guard self.topViewController() != nil else {
             self.slackPrint("❌ Cannot render tooltip: Top View Controller not found.")
             return
         }
         
-        // 1. Prepare Attributed Text (Unchanged)
-        var iconString = ""
-        if let html = iconHtml {
-            iconString = html.decodingHTMLEntities() + " "
-        }
-        let finalLine1 = iconString + line1
-        let attrLine1 = NSMutableAttributedString(string: finalLine1, attributes: [
-            .font: UIFont.boldSystemFont(ofSize: 14),
-            .foregroundColor: UIColor(hex: line1Color ?? "#000001") ?? .black
-        ])
-        let attrLine2 = NSAttributedString(string: line2, attributes: [
-            .font: UIFont.systemFont(ofSize: 12),
-            .foregroundColor: UIColor(hex: line2Color ?? "#000001") ?? .darkGray
-        ])
         let mutableAttributedText = NSMutableAttributedString()
-        mutableAttributedText.append(attrLine1)
-        mutableAttributedText.append(NSAttributedString(string: "\n\n"))
-        mutableAttributedText.append(attrLine2)
+        if let rich = richline1, !rich.isEmpty, let attr = rich.parseHTMLToAttributedString(fontSize: CGFloat(line1FontSize), color: UIColor(hex: line1Color ?? "#000001") ?? .black) {
+            var iconString = ""
+            if let html = iconHtml {
+                iconString = html.decodingHTMLEntities() + " "
+            }
+            if !iconString.isEmpty {
+                mutableAttributedText.append(NSAttributedString(string: iconString, attributes: tooltipAttributes(fontSize: CGFloat(line1FontSize), colorHex: line1Color, textStyles: line1TextStyles)))
+            }
+            mutableAttributedText.append(attr)
+            mutableAttributedText.append(NSAttributedString(string: "\n\n"))
+        } else {
+            var iconString = ""
+            if let html = iconHtml {
+                iconString = html.decodingHTMLEntities() + " "
+            }
+            let line1Attrs = tooltipAttributes(fontSize: CGFloat(line1FontSize), colorHex: line1Color, textStyles: line1TextStyles)
+            mutableAttributedText.append(NSAttributedString(string: iconString + line1 + "\n\n", attributes: line1Attrs))
+        }
+        let line2Attrs = tooltipAttributes(fontSize: CGFloat(line2FontSize), colorHex: line2Color, textStyles: line2TextStyles)
+        mutableAttributedText.append(NSAttributedString(string: line2, attributes: line2Attrs))
 
         // 2. Create the temporary, transparent anchor view
         let anchorView = UIView(frame: targetRect)
@@ -937,19 +943,13 @@ self.slackPrint("❌ Valid URL: \(urlString)")
         DispatchQueue.main.async {
                 keyWindow.addSubview(anchorView)
 
-                // 3. Configure EasyTipView preferences (Styling remains the same)
+                // 3. Configure EasyTipView preferences
                 var preferences = EasyTipView.Preferences()
-                    
-                // Styling
-                preferences.drawing.backgroundColor = UIColor(hex: "#fffffe") ?? .white
+                preferences.drawing.backgroundColor = UIColor(hex: bgColorHex) ?? .white
                 preferences.drawing.borderWidth = 0.5
                 preferences.drawing.borderColor = UIColor.lightGray.withAlphaComponent(0.4)
                 preferences.drawing.cornerRadius = 8
-                
-                preferences.drawing.shadowColor = UIColor.black.withAlphaComponent(0.15)
-                preferences.drawing.shadowOpacity = 0.6
-                preferences.drawing.shadowRadius = 4
-                preferences.drawing.shadowOffset = CGSize(width: 0, height: 2)
+                // No shadow - avoids UIDropShadowView layout off main thread crash
                 
                 // Positioning & Dismissal
                 preferences.drawing.arrowPosition = .any
@@ -1309,13 +1309,21 @@ self.slackPrint("❌ Valid URL: \(urlString)")
         }
     }
 
-    // render HTML into all coordinators registered for this placeholderId
-    func renderInlineIfNeeded(placeholderId: String, html: String) {
+    // render HTML into all coordinators registered for this placeholderId (SwiftUI) and into native placeholder container (registerPlaceholder) when present
+    func renderInlineIfNeeded(placeholderId: String, html: String, messageId: String = "") {
         DispatchQueue.main.async {
             self.cleanupInlineViews()
-            guard let list = self.inlineViews[placeholderId] else { return }
-            for weakWrapper in list {
-                weakWrapper.coordinator?.loadContent(html)
+            // 1. SwiftUI inline views (PushAppInlineView)
+            if let list = self.inlineViews[placeholderId] {
+                for weakWrapper in list {
+                    weakWrapper.coordinator?.loadContent(html)
+                }
+                self.slackPrint("✅ Inline content injected into SwiftUI view(s) for placeholderId: \(placeholderId)")
+            }
+            // 2. Native placeholder container (from JS registerPlaceholder) – so content shows in Capacitor/Ionic placeholders
+            if let containerView = self.placeholderViews[placeholderId] {
+                self.renderInlineHtml(html: html, messageId: messageId.isEmpty ? "inline" : messageId, in: containerView)
+                self.slackPrint("✅ Inline content injected into native placeholder for placeholderId: \(placeholderId)")
             }
         }
     }
@@ -1524,6 +1532,8 @@ class InAppDisplay {
     private weak var context: UIViewController?
     private var queue: [[String: Any]] = []
     private var isShowing: Bool = false
+    private var bannerWindow: UIWindow?
+    private var floaterWindow: UIWindow?
     let slackWebhookURL = URL(string: "https://hooks.slack.com/services/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")!
 
     init(context: UIViewController) {
@@ -1621,7 +1631,7 @@ class InAppDisplay {
                     if let placeholderId = eventData?["compare"] as? String, !placeholderId.isEmpty {
                         if let html = html {
                             self.slackPrint("📦 Dispatching to placeholder: \(placeholderId)")
-                            PushApp.shared.renderInlineIfNeeded(placeholderId: placeholderId, html: html)
+                            PushApp.shared.renderInlineIfNeeded(placeholderId: placeholderId, html: html, messageId: messageId)
                             self.slackPrint("✅ Content dispatched to placeholder: \(placeholderId)")
                             // finish this notification and move to next
                             self.isShowing = false
@@ -1638,25 +1648,33 @@ class InAppDisplay {
                         }
                         print(placeholderId)
                         
-                        let title = style["line_1"] as? String ?? ""
+                        let line1Plain = style["line_1"] as? String ?? ""
+                        let richline1 = style["richline_1"] as? String
                         let message = style["line_2"] as? String ?? ""
                         let bgColorHex = style["bg_color"] as? String ?? "#000000"
-                        let bgColor = UIColor(hex: bgColorHex)
+                        let bgColor = UIColor(hex: bgColorHex) ?? .black
+                        let line2FontSize: Double = (style["line2_font_size"] as? NSNumber)?.doubleValue ?? (style["line2_font_size"] as? Int).map { Double($0) } ?? 14
+                        let line2ColorHex = style["line2_font_color"] as? String
+                        let line2TextStyles = style["line2_text_styles"] as? [String]
+                        let line1FontSize: Double = (style["line1_font_size"] as? NSNumber)?.doubleValue ?? (style["line1_font_size"] as? Int).map { Double($0) } ?? 16
+                        let line1ColorHex = style["line1_font_color"] as? String
                         
                         if let targetView = TooltipRegistry.shared.view(for: placeholderId) {
                             var preferences = EasyTipView.Preferences()
-                            preferences.drawing.backgroundColor = bgColor!
+                            preferences.drawing.backgroundColor = bgColor
                             preferences.drawing.arrowPosition = .any
                             preferences.positioning.maxWidth = UIScreen.main.bounds.width * 0.8
                             
-                            let attributedText = NSMutableAttributedString(
-                                string: title + "\n\n",
-                                attributes: [.font: UIFont.boldSystemFont(ofSize: 16), .foregroundColor: UIColor.white]
-                            )
-                            attributedText.append(NSAttributedString(
-                                string: message,
-                                attributes: [.font: UIFont.systemFont(ofSize: 14), .foregroundColor: UIColor.white]
-                            ))
+                            let attributedText = NSMutableAttributedString()
+                            if let rich = richline1, !rich.isEmpty, let attr = rich.parseHTMLToAttributedString(fontSize: CGFloat(line1FontSize), color: UIColor(hex: line1ColorHex ?? "#000001") ?? .black) {
+                                attributedText.append(attr)
+                                attributedText.append(NSAttributedString(string: "\n\n"))
+                            } else {
+                                let line1Attrs = tooltipAttributes(fontSize: CGFloat(line1FontSize), colorHex: line1ColorHex, textStyles: style["line1_text_styles"] as? [String])
+                                attributedText.append(NSAttributedString(string: line1Plain + "\n\n", attributes: line1Attrs))
+                            }
+                            let line2Attrs = tooltipAttributes(fontSize: CGFloat(line2FontSize), colorHex: line2ColorHex, textStyles: line2TextStyles)
+                            attributedText.append(NSAttributedString(string: message, attributes: line2Attrs))
                             
                             let tipView = EasyTipView(text: attributedText, preferences: preferences, delegate: nil)
                             tipView.show(forView: targetView)
@@ -1682,14 +1700,14 @@ class InAppDisplay {
                         }
                     } else if layout.contains("inline") {
                         if let html = style["html"] as? String {
-                            // placeholder id resolution
+                            // Placeholder id: prefer event_data.compare (so backend can target registered id e.g. "login_banner"), else template code (e.g. "ne_inli")
                             var placeholderId = template["code"] as? String ?? ""
                             if let eventData = event["event_data"] as? [String: Any],
-                               let compare = eventData["compare"] as? String {
+                               let compare = eventData["compare"] as? String, !compare.isEmpty {
                                 placeholderId = compare
                             }
 
-                            PushApp.shared.renderInlineIfNeeded(placeholderId: placeholderId, html: html)
+                            PushApp.shared.renderInlineIfNeeded(placeholderId: placeholderId, html: html, messageId: messageId)
                             self.slackPrint("✅ Inline content injected for placeholderId: \(placeholderId)")
                         } else {
                             self.slackPrint("⚠️ inline layout but no html found")
@@ -1802,7 +1820,9 @@ class InAppDisplay {
                                 
                                 if let url = URL(string: ctaId), url.scheme != nil, UIApplication.shared.canOpenURL(url) {
                                         // Case 1: ctaId is a URL → open it
-                                        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                                        DispatchQueue.main.async {
+                                            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                                        }
                                     } else {
                                         // Case 2: ctaId is just a string → handle accordingly
                                         print("CTA String ID: \(ctaId)")
@@ -1830,19 +1850,28 @@ class InAppDisplay {
                     }
                 }
                 
-                callback(body) // still returning raw string
+                // Ensure callback is called on main thread to avoid UI modification errors
+                DispatchQueue.main.async {
+                    self.callback(body) // still returning raw string
+                }
             } else if let dict = message.body as? [String: Any] {
                 if let data = try? JSONSerialization.data(withJSONObject: dict),
                    let json = String(data: data, encoding: .utf8) {
                     print("📩 JS -> Native message: \(json)")
-                    callback(json)
+                    // Ensure callback is called on main thread to avoid UI modification errors
+                    DispatchQueue.main.async {
+                        self.callback(json)
+                    }
                 }
             }
         }
     }
 
 
-    private func makeWebView(filterId : String,messageId: String, html: String, onMessage: @escaping (String) -> Void) -> WKWebView {
+    private func makeWebView(filterId : String,messageId: String, html: String, onMessage: @escaping (String) -> Void, loadImmediately: Bool = true) -> WKWebView {
+        // Ensure we're on the main thread for all view creation
+        assert(Thread.isMainThread, "makeWebView must be called on main thread")
+        
         let contentController = WKUserContentController()
 
         // 1. Inject your bridge function
@@ -1896,7 +1925,12 @@ class InAppDisplay {
         // Disable scrolling inside WKWebView
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
-        webView.loadHTMLString(html, baseURL: nil)
+        
+        // Only load HTML immediately if requested, otherwise caller will load after adding to hierarchy
+        if loadImmediately {
+            webView.loadHTMLString(html, baseURL: nil)
+        }
+        
         return webView
     }
 
@@ -1909,7 +1943,9 @@ class InAppDisplay {
         DispatchQueue.main.async {
             // Handler that just closes the popup
             let webView = self.makeWebView(filterId: filterId, messageId: messageId,html: html) { _ in
-                context.dismiss(animated: true, completion: onClose)
+                DispatchQueue.main.async {
+                    context.dismiss(animated: true, completion: onClose)
+                }
             }
 
             let vc = UIViewController()
@@ -1996,8 +2032,10 @@ class InAppDisplay {
 
             // WebView (auto-dismiss on JS message)
             let webView = self.makeWebView(filterId: filterId, messageId : messageId,html: html) { _ in
-                self.slackPrint("📩 Bottom sheet message received, dismissing")
-                vc.dismiss(animated: true, completion: onClose)
+                DispatchQueue.main.async {
+                    self.slackPrint("📩 Bottom sheet message received, dismissing")
+                    vc.dismiss(animated: true, completion: onClose)
+                }
             }
             webView.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(webView)
@@ -2055,75 +2093,130 @@ class InAppDisplay {
         }
         self.slackPrint("📢 Showing banner")
 
-        DispatchQueue.main.async {
-            var bannerView: WKWebView?
-            var closeBtn: UIButton?
-            var containerView: UIView?
-
-            // Banner WebView (auto-dismiss on JS message)
-            bannerView = self.makeWebView(filterId: filterId, messageId: messageId,html: html) { _ in
-                self.slackPrint("📩 Banner message received, dismissing")
-                containerView?.removeFromSuperview()
-                closeBtn?.removeFromSuperview()
-                onClose()
+        // Ensure we're on the main thread
+        if Thread.isMainThread {
+            self._showBannerOnMainThread(messageId: messageId, filterId: filterId, html: html, context: context, onClose: onClose)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self._showBannerOnMainThread(messageId: messageId, filterId: filterId, html: html, context: context, onClose: onClose)
             }
+        }
+    }
+    
+    private func _showBannerOnMainThread(messageId: String, filterId: String, html: String, context: UIViewController, onClose: @escaping () -> Void) {
+        assert(Thread.isMainThread, "This method must be called on main thread")
+        
+        // Dedicated window so banner hierarchy is isolated from the app. When WKWebView loads it can
+        // trigger layout on a background thread; if the banner were in context.view, that layout
+        // would touch the app's hierarchy and any UIDropShadowView there → crash. Here only our
+        // window's hierarchy is involved and it has a root view controller.
+        let window: UIWindow
+        if #available(iOS 13.0, *) {
+            let keyWindow = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+                .first { $0.isKeyWindow }
+            if let scene = keyWindow?.windowScene {
+                window = UIWindow(windowScene: scene)
+            } else {
+                window = UIWindow(frame: UIScreen.main.bounds)
+            }
+        } else {
+            window = UIWindow(frame: UIScreen.main.bounds)
+        }
+        window.windowLevel = .alert + 1
+        window.backgroundColor = .clear
+        window.isUserInteractionEnabled = true
+        if let keyWindow = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap({ $0.windows })
+            .first(where: { $0.isKeyWindow }) {
+            window.frame = keyWindow.bounds
+        } else {
+            window.frame = UIScreen.main.bounds
+        }
+        let rootVC = UIViewController()
+        rootVC.view.backgroundColor = .clear
+        window.rootViewController = rootVC
+        self.bannerWindow = window
 
-            guard let bannerViewUnwrapped = bannerView else { return }
+        var bannerView: WKWebView?
+        let contentView = rootVC.view!
 
-            // Shadow container
-            let shadowContainer = UIView()
-            shadowContainer.translatesAutoresizingMaskIntoConstraints = false
-            shadowContainer.layer.cornerRadius = 8
-            shadowContainer.layer.masksToBounds = false
-            shadowContainer.layer.shadowColor = UIColor.black.cgColor
-            shadowContainer.layer.shadowOpacity = 0.25
-            shadowContainer.layer.shadowOffset = CGSize(width: 0, height: 4)
-            shadowContainer.layer.shadowRadius = 6
-            containerView = shadowContainer
+        // Banner container (no layer shadow - avoids UIDropShadowView)
+        let shadowContainer = UIView()
+        shadowContainer.translatesAutoresizingMaskIntoConstraints = false
+        shadowContainer.layer.cornerRadius = 8
+        shadowContainer.layer.masksToBounds = true
+        shadowContainer.backgroundColor = UIColor.systemBackground
 
-            context.view.addSubview(shadowContainer)
-            NSLayoutConstraint.activate([
-                shadowContainer.leadingAnchor.constraint(equalTo: context.view.leadingAnchor, constant: 16),
-                shadowContainer.trailingAnchor.constraint(equalTo: context.view.trailingAnchor, constant: -16),
-                shadowContainer.topAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.topAnchor, constant: 16),
-                shadowContainer.heightAnchor.constraint(equalToConstant: 100)
-            ])
+        contentView.addSubview(shadowContainer)
+        NSLayoutConstraint.activate([
+            shadowContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            shadowContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            shadowContainer.topAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor, constant: 16),
+            shadowContainer.heightAnchor.constraint(equalToConstant: 100)
+        ])
 
-            // Embed webview inside shadow container
-            shadowContainer.addSubview(bannerViewUnwrapped)
-            bannerViewUnwrapped.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                bannerViewUnwrapped.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
-                bannerViewUnwrapped.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
-                bannerViewUnwrapped.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
-                bannerViewUnwrapped.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor)
-            ])
-            bannerViewUnwrapped.layer.cornerRadius = 8
-            bannerViewUnwrapped.clipsToBounds = true
+        let btn = UIButton(type: .custom)
+        btn.setTitle("✕", for: .normal)
+        btn.setTitleColor(.black, for: .normal)
+        btn.backgroundColor = UIColor.white.withAlphaComponent(0.7)
+        btn.layer.cornerRadius = 12
+        btn.translatesAutoresizingMaskIntoConstraints = false
 
-            // Close button
-            let btn = UIButton(type: .custom)
-            btn.setTitle("✕", for: .normal)
-            btn.setTitleColor(.black, for: .normal)
-            btn.backgroundColor = UIColor.white.withAlphaComponent(0.7)
-            btn.layer.cornerRadius = 12
-            btn.translatesAutoresizingMaskIntoConstraints = false
-            closeBtn = btn
-
-            context.view.addSubview(btn)
-            NSLayoutConstraint.activate([
-                btn.topAnchor.constraint(equalTo: shadowContainer.topAnchor, constant: 8),
-                btn.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: -8),
-                btn.widthAnchor.constraint(equalToConstant: 24),
-                btn.heightAnchor.constraint(equalToConstant: 24)
-            ])
-
-            btn.addTargetClosure { _ in
-                self.slackPrint("❌ Banner close button tapped")
+        let dismissBanner: () -> Void = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
                 shadowContainer.removeFromSuperview()
                 btn.removeFromSuperview()
+                self.bannerWindow?.isHidden = true
+                self.bannerWindow?.rootViewController = nil
+                self.bannerWindow = nil
                 onClose()
             }
+        }
+
+        bannerView = self.makeWebView(filterId: filterId, messageId: messageId, html: html, loadImmediately: false) { _ in
+            self.slackPrint("📩 Banner message received, dismissing")
+            dismissBanner()
+        }
+
+        guard let bannerViewUnwrapped = bannerView else { return }
+
+        shadowContainer.addSubview(bannerViewUnwrapped)
+        bannerViewUnwrapped.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            bannerViewUnwrapped.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
+            bannerViewUnwrapped.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
+            bannerViewUnwrapped.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
+            bannerViewUnwrapped.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor)
+        ])
+        bannerViewUnwrapped.layer.cornerRadius = 8
+        bannerViewUnwrapped.clipsToBounds = true
+
+        contentView.addSubview(btn)
+        NSLayoutConstraint.activate([
+            btn.topAnchor.constraint(equalTo: shadowContainer.topAnchor, constant: 8),
+            btn.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor, constant: -8),
+            btn.widthAnchor.constraint(equalToConstant: 24),
+            btn.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
+        contentView.layoutIfNeeded()
+        shadowContainer.layoutIfNeeded()
+
+        window.makeKeyAndVisible()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard Thread.isMainThread else { return }
+            bannerViewUnwrapped.loadHTMLString(html, baseURL: nil)
+        }
+
+        btn.addTargetClosure { _ in
+            self.slackPrint("❌ Banner close button tapped")
+            dismissBanner()
         }
     }
 
@@ -2172,6 +2265,16 @@ private func showPictureInPicture(
     }
 }
 
+/// Normalizes vertical/horizontal alignment from API (flex-start, flex-end, center) to a single form for switching.
+private func normalizeAlignment(_ value: String) -> String {
+    switch value.lowercased() {
+    case "flex-start", "flex_start": return "flex_start"
+    case "flex-end", "flex_end": return "flex_end"
+    case "center": return "center"
+    default: return "flex_end"
+    }
+}
+
 @MainActor
 private func buildPIP(
     hostView: UIView,
@@ -2182,15 +2285,38 @@ private func buildPIP(
     v_a: String,
     onClose: @escaping () -> Void
 ) {
+    let h = normalizeAlignment(h_a)
+    let v = normalizeAlignment(v_a)
+
     let container = UIView()
     container.translatesAutoresizingMaskIntoConstraints = false
     container.layer.cornerRadius = 8
-    container.layer.shadowColor = UIColor.black.cgColor
-    container.layer.shadowOpacity = 0.25
-    container.layer.shadowRadius = 8
-    container.layer.shadowOffset = CGSize(width: 0, height: 4)
+    container.layer.masksToBounds = true
+    // No layer shadow - avoids UIDropShadowView layout off main thread crash
 
-    let webView = WKWebView()
+    // Config with autoplay for video (muted + playsInline + play on load)
+    let contentController = WKUserContentController()
+    let autoplayJS = """
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('video').forEach(function(v) {
+            v.muted = true;
+            v.playsInline = true;
+            var playPromise = v.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(function(err) { console.log('PIP autoplay', err); });
+            }
+        });
+    });
+    """
+    contentController.addUserScript(WKUserScript(source: autoplayJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+    let config = WKWebViewConfiguration()
+    config.userContentController = contentController
+    config.allowsInlineMediaPlayback = true
+    if #available(iOS 10.0, *) {
+        config.mediaTypesRequiringUserActionForPlayback = []
+    }
+
+    let webView = WKWebView(frame: .zero, configuration: config)
     webView.translatesAutoresizingMaskIntoConstraints = false
     webView.loadHTMLString(html, baseURL: nil)
     webView.isOpaque = false
@@ -2200,24 +2326,40 @@ private func buildPIP(
     container.addSubview(webView)
     hostView.addSubview(container)
 
-    NSLayoutConstraint.activate([
+    let margin: CGFloat = 20
+    let bottomMargin: CGFloat = 40
+    let guide = hostView.safeAreaLayoutGuide
+
+    var constraints: [NSLayoutConstraint] = [
         container.widthAnchor.constraint(equalToConstant: UIScreen.main.bounds.width / 3),
         container.heightAnchor.constraint(equalToConstant: UIScreen.main.bounds.height / 3),
-
         webView.topAnchor.constraint(equalTo: container.topAnchor),
         webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-        webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        webView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+    ]
 
-        container.trailingAnchor.constraint(equalTo: hostView.trailingAnchor, constant: -20),
-        container.bottomAnchor.constraint(equalTo: hostView.bottomAnchor, constant: -40)
-    ])
+    switch v {
+    case "flex_start":
+        constraints.append(container.topAnchor.constraint(equalTo: guide.topAnchor, constant: margin))
+    case "center":
+        constraints.append(container.centerYAnchor.constraint(equalTo: hostView.centerYAnchor))
+    case "flex_end", _:
+        constraints.append(container.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -bottomMargin))
+    }
+
+    switch h {
+    case "flex_start":
+        constraints.append(container.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: margin))
+    case "center":
+        constraints.append(container.centerXAnchor.constraint(equalTo: hostView.centerXAnchor))
+    case "flex_end", _:
+        constraints.append(container.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -margin))
+    }
+
+    NSLayoutConstraint.activate(constraints)
 
     hostView.layoutIfNeeded()
-    container.layer.shadowPath = UIBezierPath(
-        roundedRect: container.bounds,
-        cornerRadius: 8
-    ).cgPath
 
     let expand = UIButton(type: .system)
     expand.translatesAutoresizingMaskIntoConstraints = false
@@ -2266,16 +2408,61 @@ private func buildPIP(
         v_a: String = "flex_end",
         onClose: @escaping () -> Void
     ) {
-        guard let context = self.context else {
-            self.slackPrint("❌ No context for Floater")
-            onClose()
-            return
-        }
         self.slackPrint("📢 Showing Floater")
 
-        DispatchQueue.main.async {
-            let floaterView = WKWebView()
-            floaterView.loadHTMLString(html, baseURL: nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // Dedicated window so floater hierarchy is isolated (avoids layout-off-main-thread crash when WKWebView loads)
+            let window: UIWindow
+            if #available(iOS 13.0, *) {
+                let keyWindow = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .flatMap { $0.windows }
+                    .first { $0.isKeyWindow }
+                if let scene = keyWindow?.windowScene {
+                    window = UIWindow(windowScene: scene)
+                } else {
+                    window = UIWindow(frame: UIScreen.main.bounds)
+                }
+            } else {
+                window = UIWindow(frame: UIScreen.main.bounds)
+            }
+            window.windowLevel = .alert + 1
+            window.backgroundColor = .clear
+            window.isUserInteractionEnabled = true
+            if let keyWindow = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .flatMap({ $0.windows })
+                .first(where: { $0.isKeyWindow }) {
+                window.frame = keyWindow.bounds
+            } else {
+                window.frame = UIScreen.main.bounds
+            }
+            let rootVC = UIViewController()
+            rootVC.view.backgroundColor = .clear
+            window.rootViewController = rootVC
+            self.floaterWindow = window
+            let contentView = rootVC.view!
+
+            let contentController = WKUserContentController()
+            let autoplayJS = """
+            document.addEventListener('DOMContentLoaded', function() {
+                document.querySelectorAll('video').forEach(function(v) {
+                    v.muted = true;
+                    v.playsInline = true;
+                    var p = v.play();
+                    if (p !== undefined) { p.catch(function() {}); }
+                });
+            });
+            """
+            contentController.addUserScript(WKUserScript(source: autoplayJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            let config = WKWebViewConfiguration()
+            config.userContentController = contentController
+            config.allowsInlineMediaPlayback = true
+            if #available(iOS 10.0, *) {
+                config.mediaTypesRequiringUserActionForPlayback = []
+            }
+            let floaterView = WKWebView(frame: .zero, configuration: config)
             floaterView.translatesAutoresizingMaskIntoConstraints = false
             floaterView.layer.cornerRadius = 8
             floaterView.clipsToBounds = true
@@ -2289,51 +2476,49 @@ private func buildPIP(
             container.translatesAutoresizingMaskIntoConstraints = false
             container.backgroundColor = .clear
             container.addSubview(floaterView)
+            contentView.addSubview(container)
 
-            context.view.addSubview(container)
-
-            // Screen-based size (1/3 width and height)
             let screenBounds = UIScreen.main.bounds
             let floaterWidth = screenBounds.width / 3
             let floaterHeight = screenBounds.height / 3
+            let v = self.normalizeAlignment(v_a)
+            let h = self.normalizeAlignment(h_a)
+            let margin: CGFloat = 20
+            let guide = contentView.safeAreaLayoutGuide
 
             var constraints: [NSLayoutConstraint] = [
                 container.widthAnchor.constraint(equalToConstant: floaterWidth),
                 container.heightAnchor.constraint(equalToConstant: floaterHeight),
-
                 floaterView.topAnchor.constraint(equalTo: container.topAnchor),
                 floaterView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
                 floaterView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
                 floaterView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
             ]
-
-            // Vertical alignment
-            switch v_a {
+            switch v {
             case "flex_start":
-                constraints.append(container.topAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.topAnchor, constant: 20))
+                constraints.append(container.topAnchor.constraint(equalTo: guide.topAnchor, constant: margin))
             case "center":
-                constraints.append(container.centerYAnchor.constraint(equalTo: context.view.centerYAnchor))
-            case "flex_end":
-                constraints.append(container.bottomAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.bottomAnchor, constant: -20))
-            default:
-                constraints.append(container.bottomAnchor.constraint(equalTo: context.view.safeAreaLayoutGuide.bottomAnchor, constant: -20))
+                constraints.append(container.centerYAnchor.constraint(equalTo: contentView.centerYAnchor))
+            case "flex_end", _:
+                constraints.append(container.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -margin))
             }
-
-            // Horizontal alignment
-            switch h_a {
+            switch h {
             case "flex_start":
-                constraints.append(container.leadingAnchor.constraint(equalTo: context.view.leadingAnchor, constant: 20))
+                constraints.append(container.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: margin))
             case "center":
-                constraints.append(container.centerXAnchor.constraint(equalTo: context.view.centerXAnchor))
-            case "flex_end":
-                constraints.append(container.trailingAnchor.constraint(equalTo: context.view.trailingAnchor, constant: -20))
-            default:
-                constraints.append(container.trailingAnchor.constraint(equalTo: context.view.trailingAnchor, constant: -20))
+                constraints.append(container.centerXAnchor.constraint(equalTo: contentView.centerXAnchor))
+            case "flex_end", _:
+                constraints.append(container.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -margin))
             }
-
             NSLayoutConstraint.activate(constraints)
+            contentView.layoutIfNeeded()
+            window.makeKeyAndVisible()
 
-            // 👉 Add dragging gesture
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                guard Thread.isMainThread else { return }
+                floaterView.loadHTMLString(html, baseURL: nil)
+            }
+
             let panGesture = UIPanGestureRecognizer(target: self, action: #selector(self.handleFloaterPan(_:)))
             container.addGestureRecognizer(panGesture)
         }
@@ -2515,18 +2700,58 @@ extension UIColor {
 extension String {
     func decodingHTMLEntities() -> String {
         guard let data = self.data(using: .utf8) else { return self }
-        
         let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
             .documentType: NSAttributedString.DocumentType.html,
             .characterEncoding: String.Encoding.utf8.rawValue
         ]
-        
         guard let attributedString = try? NSAttributedString(data: data, options: options, documentAttributes: nil) else {
             return self
         }
-        
         return attributedString.string
     }
+
+    /// Parses HTML (e.g. richline_1) to NSAttributedString for tooltip display (variables + inline styles).
+    func parseHTMLToAttributedString(fontSize: CGFloat = 14, color: UIColor = .black) -> NSAttributedString? {
+        let wrapped = """
+        <!DOCTYPE html><html><head><meta charset=\"UTF-8\"><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:\(Int(fontSize))px;color:\(color.hexString);margin:0;}*{box-sizing:border-box;}</style></head><body>\(self)</body></html>
+        """
+        guard let data = wrapped.data(using: .utf8) else { return nil }
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+        return try? NSAttributedString(data: data, options: options, documentAttributes: nil)
+    }
+}
+
+extension UIColor {
+    var hexString: String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X", Int(r*255), Int(g*255), Int(b*255))
+    }
+}
+
+/// Build font and attributes for tooltip line from style arrays (e.g. line2_text_styles: bold, italic).
+private func tooltipFont(size: CGFloat, textStyles: [String]?) -> UIFont {
+    var traits: UIFontDescriptor.SymbolicTraits = []
+    let styles = (textStyles ?? []).map { $0.lowercased() }
+    if styles.contains("bold") { traits.insert(.traitBold) }
+    if styles.contains("italic") { traits.insert(.traitItalic) }
+    let desc = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body).withSymbolicTraits(traits) ?? UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body)
+    return UIFont(descriptor: desc, size: size)
+}
+
+private func tooltipAttributes(fontSize: CGFloat, colorHex: String?, textStyles: [String]?) -> [NSAttributedString.Key: Any] {
+    var attrs: [NSAttributedString.Key: Any] = [
+        .font: tooltipFont(size: fontSize, textStyles: textStyles),
+        .foregroundColor: UIColor(hex: colorHex ?? "#000001") ?? .black
+    ]
+    let styles = (textStyles ?? []).map { $0.lowercased() }
+    if styles.contains("underline") {
+        attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+    }
+    return attrs
 }
 
 @available(iOS 15.2, *)

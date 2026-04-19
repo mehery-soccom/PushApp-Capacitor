@@ -1,2 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- FCM and notification click handling (merged into app when plugin is used) -->
+    <application>
+        <service
+            android:name="com.mehery.pushapp.MySdkFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <receiver
+            android:name="com.mehery.pushapp.NotificationClickReceiver"
+            android:exported="false" />
+    </application>
 </manifest>

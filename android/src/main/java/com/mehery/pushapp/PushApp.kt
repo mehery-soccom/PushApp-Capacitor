@@ -45,20 +45,20 @@ class PushApp private constructor() {
             }
     }
 
-    fun initialize(context: Context, identifier: String, sandbox: Boolean = false) {
+    fun initialize(context: Context, appId: String, sandbox: Boolean = false) {
         if (initialized) return
         initialized = true
         this.context = context.applicationContext
 
-        val parts = identifier.split("$")
-        if (parts.size != 2) {
-            Log.e("PushApp", "Invalid identifier format, expected tenant\$channelId, got: $identifier")
+        // App ID is the full channel id (e.g. demo_1763369170735). Tenant is the prefix before the first '_'.
+        val u = appId.indexOf('_')
+        if (u <= 0 || u >= appId.length - 1) {
+            Log.e("PushApp", "Invalid app id: expected channel id with tenant prefix before first '_', e.g. demo_1763369170735, got: $appId")
             initialized = false
             return
         }
-        
-        tenant = parts[0]
-        channelId = parts[1]
+        tenant = appId.substring(0, u)
+        channelId = appId
 
         // Set serverUrl BEFORE other operations that might need it
         serverUrl = if (sandbox) "https://$tenant.pushapp.com" else "https://$tenant.pushapp.co.in"
@@ -104,6 +104,18 @@ class PushApp private constructor() {
     }
 
     // ------------------ Persistent Device ID ------------------
+
+    private fun mapToJsonObject(map: Map<String, Any>): JSONObject {
+        val j = JSONObject()
+        map.forEach { (k, v) ->
+            j.put(k, when (v) {
+                is Map<*, *> -> mapToJsonObject(v as Map<String, Any>)
+                is List<*> -> JSONArray(v)
+                else -> v
+            })
+        }
+        return j
+    }
 
     private fun getPersistentDeviceId(): String {
         val prefs = context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE)
@@ -260,7 +272,7 @@ class PushApp private constructor() {
             return
         }
 
-        val url = "$serverUrl/pushapp/api/register"
+        val url = "$serverUrl/pushapp/api/device/register"
 
         val json = JSONObject().apply {
             put("platform", platform)
@@ -322,7 +334,7 @@ class PushApp private constructor() {
         }
         
         this.userId = userId
-        val url = "$serverUrl/pushapp/api/register/user"
+        val url = "$serverUrl/pushapp/api/device/link"
 
         val json = JSONObject().apply {
             put("user_id", userId)
@@ -363,6 +375,67 @@ class PushApp private constructor() {
                     Log.e("PushApp", "Response Body: $responseBody")
                 }
                 response.close()
+            }
+        })
+    }
+
+    // ------------------ Create or Update Customer Profile (PUT) ------------------
+
+    /**
+     * Creates or updates customer profile. Call after login with the same `code` your app uses (e.g. userId_deviceId).
+     * Matches Flutter/iOS: PUT to .../customer/profile?code=... with body { additionalInfo, cohorts, code }.
+     */
+    fun createOrUpdateCustomerProfile(
+        code: String,
+        additionalInfo: Map<String, Any>,
+        cohorts: Map<String, Any>,
+        callback: (Boolean) -> Unit
+    ) {
+        if (serverUrl.isEmpty()) {
+            Log.e("PushApp", "PushApp not initialized. Call initialize() first.")
+            Handler(Looper.getMainLooper()).post { callback(false) }
+            return
+        }
+        if (code.isEmpty()) {
+            Log.e("PushApp", "code is required for customer profile")
+            Handler(Looper.getMainLooper()).post { callback(false) }
+            return
+        }
+
+        val encodedCode = java.net.URLEncoder.encode(code, "UTF-8")
+        val url = "$serverUrl/pushapp/api/v1/customer/profile?code=$encodedCode"
+
+        val bodyJson = JSONObject().apply {
+            put("additionalInfo", mapToJsonObject(additionalInfo))
+            put("cohorts", mapToJsonObject(cohorts))
+            put("code", code)
+        }
+
+        val requestBody = bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        val requestBuilder = Request.Builder().url(url).put(requestBody)
+            .addHeader("Content-Type", "application/json")
+
+        getDeviceHeaders().forEach { (k, v) ->
+            requestBuilder.addHeader(k, v)
+        }
+
+        Log.d("PushApp", "Customer profile PUT: $url")
+        Log.d("PushApp", "Request Body: ${bodyJson.toString(2)}")
+
+        OkHttpClient().newCall(requestBuilder.build()).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("PushApp", "Customer profile request failed: ${e.message}")
+                Handler(Looper.getMainLooper()).post { callback(false) }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val success = response.isSuccessful
+                Log.d("PushApp", "Customer profile response: ${response.code}")
+                if (!success) {
+                    Log.e("PushApp", "Response body: ${response.body?.string()}")
+                }
+                response.close()
+                Handler(Looper.getMainLooper()).post { callback(success) }
             }
         })
     }

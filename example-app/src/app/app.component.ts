@@ -23,7 +23,7 @@ export class AppComponent implements OnInit {
       // Initialize SDK
       try {
         await PushApp.initialize({
-          identifier: "demo$demo_1763369170735",
+          appId: "demo_1763369170735",
           sandbox: false
         });
         

@@ -17,7 +17,9 @@ interface PlaceholderRegistrationOptions {
 
 
 export class PushAppWeb extends WebPlugin implements PushAppPlugin {
-  async initialize(options: { identifier: string; sandbox?: boolean }): Promise<{ status: string }> {
+  async initialize(
+    options: { appId: string; sandbox?: boolean } | { identifier: string; sandbox?: boolean },
+  ): Promise<{ status: string }> {
     console.log('Web implementation - initialize', options);
     return { status: 'web_not_supported' };
   }
@@ -25,6 +27,11 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
   async login(options: { userId: string }): Promise<{ status: string }> {
     console.log('Web implementation - login', options);
     return { status: 'web_not_supported' };
+  }
+
+  async saveUserData(options: { code: string; additionalInfo: Record<string, unknown>; cohorts: Record<string, unknown> }): Promise<{ status: string; success: boolean }> {
+    console.log('Web implementation - saveUserData', options);
+    return { status: 'web_not_supported', success: false };
   }
 
   async getDeviceHeaders(): Promise<{ [key: string]: string }> {
@@ -64,5 +71,10 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     console.log('Web implementation - unregisterTooltipTarget', options);
     // Tooltips are native elements and do not render on the web
     return { status: 'web_not_supported' };
+  }
+
+  async trackPushNotificationEvent(options: { token: string; event: string; ctaId?: string }): Promise<{ success: boolean }> {
+    console.log('Web implementation - trackPushNotificationEvent', options);
+    return { success: false };
   }
 }

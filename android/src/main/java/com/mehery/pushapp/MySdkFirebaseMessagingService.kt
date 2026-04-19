@@ -184,6 +184,10 @@ class MySdkFirebaseMessagingService : FirebaseMessagingService() {
 }
 
 
+/**
+ * Handles notification body tap and CTA button taps (same behavior as iOS AppDelegate didReceive).
+ * Tracks "opened" or "cta" via PushApp.trackNotificationEvent and opens CTA URL when present.
+ */
 class NotificationClickReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val notificationId = intent.getIntExtra("notification_id", -1)
@@ -191,36 +195,44 @@ class NotificationClickReceiver : BroadcastReceiver() {
             bundle.keySet().associateWith { bundle[it].toString() }
         } ?: emptyMap()
 
-        Log.d("MySdk", "Notification clicked! ID: $notificationId, data: $data")
+        Log.d("PushApp", "📩 Notification clicked, ID = $notificationId")
+        Log.d("PushApp", "🧾 userInfo: $data")
 
         val clickToken = data["click_token"]
-        val ctaId = data["action_id"]
-        val url = data["url"]
-
-        if (!clickToken.isNullOrEmpty()) {
-            PushApp.getInstance().trackNotificationEvent(
-                clickToken = clickToken,
-                event = if (ctaId.isNullOrEmpty()) "opened" else "cta",
-                ctaId = ctaId
-            )
+        if (clickToken.isNullOrEmpty()) {
+            Log.e("PushApp", "❌ Missing click_token in payload")
+            if (notificationId != -1) {
+                (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notificationId)
+            }
+            return
         }
 
-        // Open the URL if CTA clicked
-        url?.let {
+        val ctaId = data["action_id"]
+        val event = if (ctaId.isNullOrEmpty()) "opened" else "cta"
+        val url = data["url"]
+
+        // Track the event (opened or CTA) — same as iOS trackPushNotificationEvent
+        PushApp.getInstance().trackNotificationEvent(
+            clickToken = clickToken,
+            event = event,
+            ctaId = if (ctaId.isNullOrEmpty()) null else ctaId
+        )
+        Log.d("PushApp", "✅ Push track ($event) sent.")
+
+        // Open the URL if CTA clicked (same as iOS UIApplication.shared.open)
+        if (!url.isNullOrEmpty()) {
             try {
-                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(browserIntent)
             } catch (e: Exception) {
-                Log.e("PushApp", "Failed to open URL: $it", e)
+                Log.e("PushApp", "❌ Failed to open URL: $url", e)
             }
         }
 
-        // Cancel the notification
         if (notificationId != -1) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.cancel(notificationId)
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notificationId)
         }
     }
 }
