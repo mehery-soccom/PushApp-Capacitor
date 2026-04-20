@@ -258,7 +258,7 @@ public func unregisterPlaceholder(placeholderId: String) {
 
         if lastToken != tokenString {
             self.slackPrint("📡 New APNs token detected, sending to server...")
-            sendTokenToServer(platform: "ios", token: tokenString, fcmToken: nil, completion: nil)
+            sendTokenToServer(token: tokenString, fcmToken: nil, completion: nil)
         } else {
             self.slackPrint("✅ Token unchanged, not sending to server")
         }
@@ -266,11 +266,11 @@ public func unregisterPlaceholder(placeholderId: String) {
 
     /// POST to `/pushapp/api/device/register`.
     /// iOS sends APNs token in `token`; optional Firebase token can be sent in `fcmToken`.
-    public func registerPushToken(token: String, fcmToken: String?, completion: @escaping (Bool) -> Void) {
-        sendTokenToServer(platform: "ios", token: token, fcmToken: fcmToken, completion: completion)
+    public func registerPushToken(apnsToken: String, fcmToken: String?, completion: @escaping (Bool) -> Void) {
+        sendTokenToServer(token: apnsToken, fcmToken: fcmToken, completion: completion)
     }
 
-    private func sendTokenToServer(platform: String, token: String, fcmToken: String? = nil, completion: ((Bool) -> Void)? = nil) {
+    private func sendTokenToServer(token: String, fcmToken: String? = nil, completion: ((Bool) -> Void)? = nil) {
         guard let deviceId = getPersistentDeviceId() as String? else {
             self.slackPrint("❌ Failed to get deviceId")
             if let completion = completion {
@@ -299,7 +299,7 @@ public func unregisterPlaceholder(placeholderId: String) {
         }
 
         var payload: [String: Any] = [
-            "platform": platform,
+            "platform": "ios",
             "token": token,
             "device_id": deviceId,
             "channel_id": channelId

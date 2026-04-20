@@ -22,12 +22,12 @@ export interface PushAppPlugin {
   ): Promise<{ status: string }>;
   /**
    * POST push token to `/pushapp/api/device/register` (same as native auto-register).
-   * Call after `initialize` when you have FCM (Android) or APNs hex / FCM (iOS).
-   * `token` is required.
-   * - Android: pass FCM token in `token`.
-   * - iOS: pass APNs token in `token`, and optionally pass Firebase token in `fcmToken`.
+   * Call after `initialize`.
+   * - Android: provide `fcmToken` (it is sent as backend `token`).
+   * - iOS: provide `apnsToken` (sent as backend `token`) and optional `fcmToken` (sent as backend `fcm_token`).
+   * Legacy fallback: `token` is accepted as alias for the platform primary token.
    */
-  registerPushToken(options: { token: string; fcmToken?: string }): Promise<{ status: string; success: boolean }>;
+  registerPushToken(options: { apnsToken?: string; fcmToken?: string; token?: string }): Promise<{ status: string; success: boolean }>;
   login(options: { userId: string }): Promise<{ status: string }>;
   /** Create or update customer profile (PUT). Call after login with code = userId_deviceId. */
   saveUserData(options: { code: string; additionalInfo: Record<string, unknown>; cohorts: Record<string, unknown> }): Promise<{ status: string; success: boolean }>;

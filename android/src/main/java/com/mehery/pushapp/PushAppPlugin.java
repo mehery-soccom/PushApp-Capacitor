@@ -55,12 +55,17 @@ public class PushAppPlugin extends Plugin {
      */
     @PluginMethod
     public void registerPushToken(PluginCall call) {
-        String token = call.getString("token");
-        if (token == null || token.isEmpty()) {
-            call.reject("token is required");
+        // Exposed API accepts both fields; Android uses FCM token as `token` in backend payload.
+        String fcmToken = call.getString("fcmToken");
+        if (fcmToken == null || fcmToken.isEmpty()) {
+            // Backward-compatible fallback
+            fcmToken = call.getString("token");
+        }
+        if (fcmToken == null || fcmToken.isEmpty()) {
+            call.reject("fcmToken is required on Android");
             return;
         }
-        PushApp.Companion.getInstance().registerPushToken(token, success -> {
+        PushApp.Companion.getInstance().registerPushToken(fcmToken, success -> {
             if (success) {
                 JSObject ret = new JSObject();
                 ret.put("status", "registered");

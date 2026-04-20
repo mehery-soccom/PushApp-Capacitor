@@ -24,7 +24,7 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     return { status: 'web_not_supported' };
   }
 
-  async registerPushToken(options: { token: string; fcmToken?: string }): Promise<{ status: string; success: boolean }> {
+  async registerPushToken(options: { apnsToken?: string; fcmToken?: string; token?: string }): Promise<{ status: string; success: boolean }> {
     console.log('Web implementation - registerPushToken', options);
     return { status: 'web_not_supported', success: false };
   }

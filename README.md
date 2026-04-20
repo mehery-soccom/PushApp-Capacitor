@@ -4,269 +4,135 @@ A lightweight Capacitor plugin to support push notifications, custom in-app mess
 
 ---
 
-## 📦 Installation
+## What Your App Must Add (Quick Checklist)
 
-Install the package via npm:
+Your Ionic/Capacitor app should include all of the following:
+
+- Firebase config files:
+  - Android: `android/app/google-services.json`
+  - iOS: `ios/App/GoogleService-Info.plist`
+- Push capability on iOS and foreground notification handling in `AppDelegate.swift`
+- SDK initialization at app startup (`PushApp.initialize`)
+- Push token registration from app code (`PushApp.registerPushToken`)
+- User identity and tracking calls where they match your user journey:
+  - `PushApp.login`
+  - `PushApp.setPageName`
+  - `PushApp.sendEvent`
+  - `PushApp.saveUserData` (after login)
+- Placeholder/tooltip registration only if you use inline/tooltip in-app surfaces
+
+---
+
+## 📦 Installation
 
 ```bash
 npm install pushapp-ionic
 npx cap sync
 ```
 
-### Platform Setup
+For iOS, then run:
 
-#### Android
+```bash
+cd ios/App && pod install
+```
 
-1. **Firebase Configuration**: Ensure you have `google-services.json` in your `android/app/` directory.
+---
 
-2. **AndroidManifest.xml**: The SDK handles notification permissions automatically.
+## Step-by-Step Setup (Ionic/Capacitor)
 
-#### iOS
+### 1) Add Firebase files
 
-1. **Push Notifications Capability**: Enable Push Notifications in your Xcode project capabilities.
+- Android: place `google-services.json` in `android/app/`
+- iOS: add `GoogleService-Info.plist` to your app target
 
-2. **AppDelegate Setup**: Add the following to your `AppDelegate.swift` to handle foreground notifications:
+### 2) iOS push setup
+
+Enable **Push Notifications** capability in Xcode and add foreground handling:
 
 ```swift
 import UserNotifications
 
 func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-    // Set UNUserNotificationCenter delegate to handle foreground notifications
     UNUserNotificationCenter.current().delegate = self
     return true
 }
 
-// MARK: - UNUserNotificationCenterDelegate
-
 func userNotificationCenter(_ center: UNUserNotificationCenter,
                             willPresent notification: UNNotification,
                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-    // Show notification banner even when app is in foreground
     if #available(iOS 14.0, *) {
         completionHandler([.banner, .sound, .badge])
     } else {
         completionHandler([.alert, .sound, .badge])
     }
 }
-
-func userNotificationCenter(_ center: UNUserNotificationCenter,
-                            didReceive response: UNNotificationResponse,
-                            withCompletionHandler completionHandler: @escaping () -> Void) {
-    completionHandler()
-}
 ```
 
----
-
-## 🚀 Initialization
-
-Initialize the SDK in your app's entry point (e.g., `app.component.ts` or `main.ts`):
+### 3) Initialize SDK at app startup
 
 ```typescript
 import { PushApp } from 'pushapp-ionic';
 
-// Initialize the SDK — pass your channel id as App ID (`appId`).
-// Example: demo_1763369170735 → tenant subdomain is `demo`, channel id is the full string.
 await PushApp.initialize({
-  appId: 'demo_1763369170735',
-  sandbox: true // or false for production
+  appId: 'demo_1763369170735', // full channel id (tenant prefix inside this string)
+  sandbox: false
 });
 ```
 
-To register the device push token from TypeScript (FCM / APNs), call `registerPushToken` after you receive the token (see API reference below).
+### 4) Register push token from app code
 
-To login the user:
+- Android: pass `fcmToken`
+- iOS: pass `apnsToken`, optionally `fcmToken`
 
 ```typescript
-await PushApp.login({
-  userId: 'user_id'
+// Android
+await PushApp.registerPushToken({ fcmToken });
+
+// iOS
+await PushApp.registerPushToken({
+  apnsToken,
+  fcmToken, // optional
 });
 ```
 
-### Update Customer Profile (Recommended after login)
-
-Use `saveUserData` to create or update the customer profile on PushApp.
-Call this right after a successful login.
+### 5) Link user/session + events
 
 ```typescript
-// 1) Login user first
-await PushApp.login({
-  userId: 'user_id'
-});
+await PushApp.login({ userId: 'user_123' });
 
-// 2) Build profile code = userId_deviceId
-const headers = await PushApp.getDeviceHeaders();
-const deviceId = headers['X-Device-ID'] ?? '';
-const code = `user_id_${deviceId}`;
+await PushApp.setPageName({ pageName: 'home' });
 
-// 3) Send profile fields
-await PushApp.saveUserData({
-  code,
-  additionalInfo: {
-    dob: 946684800000,           // ms timestamp
-    gender: 'male',
-    expiry_date: 2208988800      // seconds timestamp
-  },
-  cohorts: {
-    plan: 'premium',
-    region: 'apac',
-    signup_source: 'mobile_app'
-  }
-});
-```
-
----
-
-## 🎯 Event Tracking
-
-Track user actions or custom events:
-
-```typescript
 await PushApp.sendEvent({
   eventName: 'button_clicked',
   eventData: {
-    button_name: 'checkout',
-    page: 'cart'
+    source: 'welcome_screen',
+    method: 'google'
   }
 });
 ```
 
-### Page Tracking
-
-Track page views:
+### 6) Update customer profile (recommended after login)
 
 ```typescript
-await PushApp.setPageName({
-  pageName: 'home'
+const headers = await PushApp.getDeviceHeaders();
+const deviceId = headers['X-Device-ID'] ?? '';
+const code = `user_123_${deviceId}`;
+
+await PushApp.saveUserData({
+  code,
+  additionalInfo: { city: 'Mumbai', plan: 'free' },
+  cohorts: { segment: 'trial' }
 });
 ```
 
----
+### 7) Optional: inline + tooltip in-app placements
 
-## 🔔 Notification Handling
+Use:
 
-The SDK automatically:
-- Registers device tokens (FCM for Android, APNs for iOS)
-- Handles push notification display
-- Manages notification permissions
+- `PushApp.registerPlaceholder` / `PushApp.unregisterPlaceholder`
+- `PushApp.registerTooltipTarget` / `PushApp.unregisterTooltipTarget`
 
----
-
-## 📱 In-App Notifications
-
-The SDK automatically handles various in-app notification types:
-
-### 1. Popup (Full-Screen)
-Full-screen modal notifications that require user interaction.
-
-### 2. Banner
-Inline dismissible banners that appear at the top of the screen.
-
-### 3. Picture-in-Picture (PiP)
-Small floating views that can be expanded to full-screen popups.
-
-**No integration required** - The SDK renders them automatically when triggered by your backend.
-
----
-
-## 🎨 Inline Placeholder Views
-
-Display in-app notifications directly in your app's UI instead of showing them as banners or roadblocks.
-
-### Usage
-
-1. **Create a container element** in your HTML:
-
-```html
-<div id="my-placeholder"></div>
-```
-
-2. **Register the placeholder** in your component:
-
-```typescript
-import { PushApp } from 'pushapp-ionic';
-import { AfterViewInit } from '@angular/core';
-
-export class HomePage implements AfterViewInit {
-  ngAfterViewInit() {
-    // Wait for DOM to be ready
-    setTimeout(() => {
-      const element = document.getElementById('my-placeholder');
-      if (element) {
-        const rect = element.getBoundingClientRect();
-        
-        await PushApp.registerPlaceholder({
-          placeholderId: 'my_placeholder_id',
-          x: Math.round(rect.left),
-          y: Math.round(rect.top),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height)
-        });
-      }
-    }, 100);
-  }
-}
-```
-
-3. **Unregister when leaving the page**:
-
-```typescript
-ngOnDestroy() {
-  PushApp.unregisterPlaceholder({
-    placeholderId: 'my_placeholder_id'
-  });
-}
-```
-
----
-
-## 💬 Tooltip Targets
-
-Register UI elements as anchor points for native tooltips/popovers that appear above or below the target element.
-
-### Usage
-
-1. **Create a target element** in your HTML:
-
-```html
-<ion-button id="tooltip-target">Click Me</ion-button>
-```
-
-2. **Register the tooltip target** in your component:
-
-```typescript
-import { PushApp } from 'pushapp-ionic';
-import { AfterViewInit } from '@angular/core';
-
-export class HomePage implements AfterViewInit {
-  ngAfterViewInit() {
-    setTimeout(() => {
-      const element = document.getElementById('tooltip-target');
-      if (element) {
-        const rect = element.getBoundingClientRect();
-        
-        await PushApp.registerTooltipTarget({
-          targetId: 'my_tooltip_target',
-          x: Math.round(rect.left),
-          y: Math.round(rect.top),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height)
-        });
-      }
-    }, 100);
-  }
-}
-```
-
-3. **Unregister when leaving the page**:
-
-```typescript
-ngOnDestroy() {
-  PushApp.unregisterTooltipTarget({
-    targetId: 'my_tooltip_target'
-  });
-}
-```
+with element bounds from `getBoundingClientRect()` in your page/component lifecycle.
 
 ---
 
@@ -288,12 +154,13 @@ Initialize the SDK.
 POST the push token to `/pushapp/api/device/register` (same endpoint as native auto-registration). Use when you obtain the token in TypeScript (e.g. `@capacitor/push-notifications`) instead of relying only on native registration.
 
 **Parameters:**
-- `token` (string, required): Android sends FCM token in this field. iOS sends APNs token in this field.
-- `fcmToken` (string, optional): iOS optional Firebase token, sent as `fcm_token`.
+- `apnsToken` (string, optional): iOS APNs token. This is sent as backend `token`.
+- `fcmToken` (string, optional): Android FCM token (required on Android). On iOS, optional Firebase token sent as backend `fcm_token`.
+- `token` (string, optional legacy alias): Backward-compatible alias for the platform primary token.
 
 **Returns:** `Promise<{ status: string; success: boolean }>`
 
-**Example:**
+**Examples:**
 
 ```typescript
 import { PushNotifications } from '@capacitor/push-notifications';
@@ -302,7 +169,15 @@ import { PushApp } from 'pushapp-ionic';
 await PushApp.initialize({ appId: 'demo_1763369170735', sandbox: false });
 
 PushNotifications.addListener('registration', async (info) => {
-  await PushApp.registerPushToken({ token: info.value });
+  await PushApp.registerPushToken({ fcmToken: info.value });
+});
+```
+
+```typescript
+// iOS example: APNs token required, FCM token optional
+await PushApp.registerPushToken({
+  apnsToken: apnsTokenValue,
+  fcmToken: fcmTokenValue, // optional
 });
 ```
 
