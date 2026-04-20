@@ -258,21 +258,33 @@ public func unregisterPlaceholder(placeholderId: String) {
 
         if lastToken != tokenString {
             self.slackPrint("📡 New APNs token detected, sending to server...")
-            sendTokenToServer(platform: "ios", token: tokenString)
+            sendTokenToServer(platform: "apns", token: tokenString, fcmToken: nil, completion: nil)
         } else {
             self.slackPrint("✅ Token unchanged, not sending to server")
         }
     }
 
-    private func sendTokenToServer(platform: String, token: String) {
+    /// POST to `/pushapp/api/device/register`.
+    /// iOS sends APNs token in `token`; optional Firebase token can be sent in `fcmToken`.
+    public func registerPushToken(token: String, fcmToken: String?, completion: @escaping (Bool) -> Void) {
+        sendTokenToServer(platform: "apns", token: token, fcmToken: fcmToken, completion: completion)
+    }
+
+    private func sendTokenToServer(platform: String, token: String, fcmToken: String? = nil, completion: ((Bool) -> Void)? = nil) {
         guard let deviceId = getPersistentDeviceId() as String? else {
             self.slackPrint("❌ Failed to get deviceId")
+            if let completion = completion {
+                DispatchQueue.main.async { completion(false) }
+            }
             return
         }
 
         let urlString = "\(serverUrl)/pushapp/api/device/register"
         guard let url = URL(string: urlString) else {
             self.slackPrint("❌ Invalid URL: \(urlString)")
+            if let completion = completion {
+                DispatchQueue.main.async { completion(false) }
+            }
             return
         }
 
@@ -286,26 +298,34 @@ public func unregisterPlaceholder(placeholderId: String) {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "platform": platform,
             "token": token,
             "device_id": deviceId,
             "channel_id": channelId
         ]
+        if let fcmToken = fcmToken, !fcmToken.isEmpty {
+            payload["fcm_token"] = fcmToken
+        }
 
-        if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            self.slackPrint("📤 Sending Token Request: \(urlString)")
-            self.slackPrint("📦 Payload: \(jsonString)")
-            request.httpBody = jsonData
-        } else {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted),
+              let jsonString = String(data: jsonData, encoding: .utf8) else {
             self.slackPrint("❌ Failed to serialize payload")
+            if let completion = completion {
+                DispatchQueue.main.async { completion(false) }
+            }
             return
         }
+        self.slackPrint("📤 Sending Token Request: \(urlString)")
+        self.slackPrint("📦 Payload: \(jsonString)")
+        request.httpBody = jsonData
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 self.slackPrint("❌ Token send failed: \(error.localizedDescription)")
+                if let completion = completion {
+                    DispatchQueue.main.async { completion(false) }
+                }
                 return
             }
 
@@ -316,12 +336,18 @@ public func unregisterPlaceholder(placeholderId: String) {
 
             guard let data = data else {
                 self.slackPrint("❌ No response data received")
+                if let completion = completion {
+                    DispatchQueue.main.async { completion(false) }
+                }
                 return
             }
 
             if let rawString = String(data: data, encoding: .utf8) {
                 self.slackPrint("📥 Raw Response: \(rawString)")
             }
+
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let httpOk = (200..<300).contains(status)
 
             do {
                 let json = try JSONSerialization.jsonObject(with: data, options: [.allowFragments])
@@ -339,6 +365,10 @@ public func unregisterPlaceholder(placeholderId: String) {
                 }
             } catch {
                 self.slackPrint("❌ Token send JSON parse error: \(error)")
+            }
+
+            if let completion = completion {
+                DispatchQueue.main.async { completion(httpOk) }
             }
         }.resume()
     }

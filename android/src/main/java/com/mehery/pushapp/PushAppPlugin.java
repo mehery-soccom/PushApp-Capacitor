@@ -50,6 +50,29 @@ public class PushAppPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * POST push token to {@code /pushapp/api/device/register}. Call after {@code initialize} when you have the FCM token.
+     */
+    @PluginMethod
+    public void registerPushToken(PluginCall call) {
+        String token = call.getString("token");
+        if (token == null || token.isEmpty()) {
+            call.reject("token is required");
+            return;
+        }
+        PushApp.Companion.getInstance().registerPushToken(token, success -> {
+            if (success) {
+                JSObject ret = new JSObject();
+                ret.put("status", "registered");
+                ret.put("success", true);
+                call.resolve(ret);
+            } else {
+                call.reject("Device register failed");
+            }
+            return Unit.INSTANCE;
+        });
+    }
+
     // MARK: - login
     @PluginMethod
     public void login(PluginCall call) {

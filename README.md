@@ -73,6 +73,8 @@ await PushApp.initialize({
 });
 ```
 
+To register the device push token from TypeScript (FCM / APNs), call `registerPushToken` after you receive the token (see API reference below).
+
 To login the user:
 
 ```typescript
@@ -281,6 +283,28 @@ Initialize the SDK.
 - `sandbox` (boolean, optional): Set to `true` for sandbox environment, `false` for production
 
 **Returns:** `Promise<{ status: string }>`
+
+#### `registerPushToken(options)`
+POST the push token to `/pushapp/api/device/register` (same endpoint as native auto-registration). Use when you obtain the token in TypeScript (e.g. `@capacitor/push-notifications`) instead of relying only on native registration.
+
+**Parameters:**
+- `token` (string, required): Android sends FCM token in this field. iOS sends APNs token in this field.
+- `fcmToken` (string, optional): iOS optional Firebase token, sent as `fcm_token`.
+
+**Returns:** `Promise<{ status: string; success: boolean }>`
+
+**Example:**
+
+```typescript
+import { PushNotifications } from '@capacitor/push-notifications';
+import { PushApp } from 'pushapp-ionic';
+
+await PushApp.initialize({ appId: 'demo_1763369170735', sandbox: false });
+
+PushNotifications.addListener('registration', async (info) => {
+  await PushApp.registerPushToken({ token: info.value });
+});
+```
 
 #### `login(options)`
 Login a user to the SDK.

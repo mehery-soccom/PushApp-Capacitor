@@ -22,6 +22,22 @@ public class PushAppPlugin: CAPPlugin {
         ])
     }
 
+    /// POST push token to `/pushapp/api/device/register`. Call after `initialize` when you have APNs (hex) or FCM token.
+    @objc func registerPushToken(_ call: CAPPluginCall) {
+        guard let token = call.getString("token"), !token.isEmpty else {
+            call.reject("token is required")
+            return
+        }
+        let fcmToken = call.getString("fcmToken")
+        PushApp.shared.registerPushToken(token: token, fcmToken: fcmToken) { success in
+            if success {
+                call.resolve(["status": "registered", "success": true])
+            } else {
+                call.reject("Device register failed")
+            }
+        }
+    }
+
     // MARK: - login
     @objc func login(_ call: CAPPluginCall) {
         guard let userId = call.getString("userId") else {

@@ -198,10 +198,10 @@ class PushApp private constructor() {
                 // ✅ Token is the same — just send to server (keep-alive)
                 Log.d("PushApp", "✅ Token unchanged — calling sendTokenToServer()")
                 Log.d("PushApp", "✅ Last Token — $lastToken")
-                sendTokenToServer("android", newToken)
+                sendTokenToServer("firebase", newToken)
             } else if(lastToken == null){
                 Log.d("PushApp", "✅ New Token - $newToken")
-                sendTokenToServer("android", newToken)
+                sendTokenToServer("firebase", newToken)
             } else {
                 // 🔄 Token changed — update it on server
                 Log.d("PushApp", "🔄 Token changed — calling updateDeviceToken()")
@@ -220,7 +220,7 @@ class PushApp private constructor() {
 
     fun handleDeviceToken(token: String) {
         Log.d("PushApp", "Handling device token: $token")
-        sendTokenToServer("android", token)
+        sendTokenToServer("firebase", token)
     }
 
     // ------------------ Headers ------------------
@@ -266,12 +266,28 @@ class PushApp private constructor() {
             Log.e("PushApp", "Cannot send token: PushApp not initialized")
             return
         }
-        
         if (hasRegistered()) {
             Log.d("PushApp", "Device already registered. Skipping registration.")
             return
         }
+        postDeviceRegister(platform, token, callback = null)
+    }
 
+    /**
+     * POST push token to `/pushapp/api/device/register` (always sends; ignores [hasRegistered] gate).
+     * Call from Capacitor after you obtain FCM (Android) or APNs/FCM (iOS) token in JS/native.
+     */
+    fun registerPushToken(token: String, callback: (Boolean) -> Unit) {
+        if (serverUrl.isEmpty()) {
+            Log.e("PushApp", "Cannot register push token: PushApp not initialized")
+            Handler(Looper.getMainLooper()).post { callback(false) }
+            return
+        }
+        // Android always sends FCM token in `token` with platform `firebase`.
+        postDeviceRegister("firebase", token, callback = callback)
+    }
+
+    private fun postDeviceRegister(platform: String, token: String, callback: ((Boolean) -> Unit)?) {
         val url = "$serverUrl/pushapp/api/device/register"
 
         val json = JSONObject().apply {
@@ -296,14 +312,21 @@ class PushApp private constructor() {
         OkHttpClient().newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Failed to send token to server: ${e.message}")
+                callback?.let { cb ->
+                    Handler(Looper.getMainLooper()).post { cb(false) }
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val responseBody = response.body?.string()
-                if (response.isSuccessful) {
+                val success = response.isSuccessful
+                if (success) {
                     Log.d("PushApp", "SendToken API success, code=${response.code}")
                     Log.d("PushApp", "Response Body: $responseBody")
                     setRegistered()
+                    context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE).edit()
+                        .putString("fcm_token", token)
+                        .apply()
 
                     try {
                         val responseJson = JSONObject(responseBody ?: "{}")
@@ -321,6 +344,9 @@ class PushApp private constructor() {
                     Log.e("PushApp", "Response Body: $responseBody")
                 }
                 response.close()
+                callback?.let { cb ->
+                    Handler(Looper.getMainLooper()).post { cb(success) }
+                }
             }
         })
     }
