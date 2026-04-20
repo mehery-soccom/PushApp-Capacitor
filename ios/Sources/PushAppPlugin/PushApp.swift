@@ -258,7 +258,7 @@ public func unregisterPlaceholder(placeholderId: String) {
 
         if lastToken != tokenString {
             self.slackPrint("📡 New APNs token detected, sending to server...")
-            sendTokenToServer(platform: "apns", token: tokenString, fcmToken: nil, completion: nil)
+            sendTokenToServer(platform: "ios", token: tokenString, fcmToken: nil, completion: nil)
         } else {
             self.slackPrint("✅ Token unchanged, not sending to server")
         }
@@ -267,7 +267,7 @@ public func unregisterPlaceholder(placeholderId: String) {
     /// POST to `/pushapp/api/device/register`.
     /// iOS sends APNs token in `token`; optional Firebase token can be sent in `fcmToken`.
     public func registerPushToken(token: String, fcmToken: String?, completion: @escaping (Bool) -> Void) {
-        sendTokenToServer(platform: "apns", token: token, fcmToken: fcmToken, completion: completion)
+        sendTokenToServer(platform: "ios", token: token, fcmToken: fcmToken, completion: completion)
     }
 
     private func sendTokenToServer(platform: String, token: String, fcmToken: String? = nil, completion: ((Bool) -> Void)? = nil) {
