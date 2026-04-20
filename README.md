@@ -127,12 +127,102 @@ await PushApp.saveUserData({
 
 ### 7) Optional: inline + tooltip in-app placements
 
-Use:
+#### 🎨 Inline Placeholder Views
 
-- `PushApp.registerPlaceholder` / `PushApp.unregisterPlaceholder`
-- `PushApp.registerTooltipTarget` / `PushApp.unregisterTooltipTarget`
+Display in-app notifications directly in your app's UI instead of showing them as banners or roadblocks.
 
-with element bounds from `getBoundingClientRect()` in your page/component lifecycle.
+**Usage**
+
+1. Create a container element in your HTML:
+
+```html
+<div id="my-placeholder"></div>
+```
+
+2. Register the placeholder in your component:
+
+```typescript
+import { PushApp } from 'pushapp-ionic';
+import { AfterViewInit } from '@angular/core';
+
+export class HomePage implements AfterViewInit {
+  async ngAfterViewInit() {
+    // Wait for DOM to be ready
+    setTimeout(async () => {
+      const element = document.getElementById('my-placeholder');
+      if (element) {
+        const rect = element.getBoundingClientRect();
+
+        await PushApp.registerPlaceholder({
+          placeholderId: 'my_placeholder_id',
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        });
+      }
+    }, 100);
+  }
+}
+```
+
+3. Unregister when leaving the page:
+
+```typescript
+ngOnDestroy() {
+  PushApp.unregisterPlaceholder({
+    placeholderId: 'my_placeholder_id'
+  });
+}
+```
+
+#### 💬 Tooltip Targets
+
+Register UI elements as anchor points for native tooltips/popovers that appear above or below the target element.
+
+**Usage**
+
+1. Create a target element in your HTML:
+
+```html
+<ion-button id="tooltip-target">Click Me</ion-button>
+```
+
+2. Register the tooltip target in your component:
+
+```typescript
+import { PushApp } from 'pushapp-ionic';
+import { AfterViewInit } from '@angular/core';
+
+export class HomePage implements AfterViewInit {
+  async ngAfterViewInit() {
+    setTimeout(async () => {
+      const element = document.getElementById('tooltip-target');
+      if (element) {
+        const rect = element.getBoundingClientRect();
+
+        await PushApp.registerTooltipTarget({
+          targetId: 'my_tooltip_target',
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        });
+      }
+    }, 100);
+  }
+}
+```
+
+3. Unregister when leaving the page:
+
+```typescript
+ngOnDestroy() {
+  PushApp.unregisterTooltipTarget({
+    targetId: 'my_tooltip_target'
+  });
+}
+```
 
 ---
 
