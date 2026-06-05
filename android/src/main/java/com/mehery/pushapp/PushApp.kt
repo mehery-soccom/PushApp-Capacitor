@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.lang.ref.WeakReference
+import java.util.concurrent.TimeUnit
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -21,9 +22,18 @@ import kotlinx.coroutines.flow.SharedFlow
 
 class PushApp private constructor() {
 
+    private enum class SdkLifecycle {
+        NOT_INITIALIZED,
+        INITIALIZED,
+        REGISTERED,
+        LOGGED_IN,
+    }
+
     private var initialized = false
+    private var lifecycleState = SdkLifecycle.NOT_INITIALIZED
     private lateinit var context: Context
     private var serverUrl: String = ""
+    private var sandbox: Boolean = false
     private var tenant: String = ""
     private var channelId: String = ""
     private var userId: String? = null
@@ -35,6 +45,12 @@ class PushApp private constructor() {
     private var webSocketManager: WebSocketManager? = null
     private var currentActivityRef: WeakReference<Activity>? = null
 
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor(ApiSlackLoggingInterceptor())
+        .build()
+
     companion object {
         @Volatile
         private var instance: PushApp? = null
@@ -45,23 +61,41 @@ class PushApp private constructor() {
             }
     }
 
-    fun initialize(context: Context, appId: String, sandbox: Boolean = false) {
-        if (initialized) return
-        initialized = true
+    fun initialize(
+        context: Context,
+        appId: String,
+        sandbox: Boolean = false,
+        slackWebhookUrl: String? = null,
+    ): Boolean {
+        SlackApiLogger.configure(slackWebhookUrl)
+        if (initialized) {
+            Log.d("PushApp", "Already initialized; updated Slack webhook config")
+            return lifecycleState != SdkLifecycle.NOT_INITIALIZED
+        }
+
         this.context = context.applicationContext
 
         // App ID is the full channel id (e.g. demo_1763369170735). Tenant is the prefix before the first '_'.
         val u = appId.indexOf('_')
         if (u <= 0 || u >= appId.length - 1) {
-            Log.e("PushApp", "Invalid app id: expected channel id with tenant prefix before first '_', e.g. demo_1763369170735, got: $appId")
+            Log.e(
+                "PushApp",
+                "Initialize failed: invalid app id (expected tenant_prefix before first '_', e.g. demo_1763369170735, got: $appId)",
+            )
             initialized = false
-            return
+            lifecycleState = SdkLifecycle.NOT_INITIALIZED
+            return false
         }
+
+        initialized = true
         tenant = appId.substring(0, u)
         channelId = appId
+        this.sandbox = sandbox
 
         // Set serverUrl BEFORE other operations that might need it
-        serverUrl = if (sandbox) "https://$tenant.pushapp.com" else "https://$tenant.pushapp.co.in"
+        serverUrl = if (sandbox) "https://$tenant.pushapp.ai" else "https://$tenant.pushapp.co.in"
+        lifecycleState = SdkLifecycle.INITIALIZED
+        Log.d("PushApp", "SDK initialized — next: call register() with push token, then login()")
         Log.d("PushApp", "Server URL: $serverUrl")
         Log.d("PushApp", "Channel ID: $channelId")
         Log.d("PushApp", "Tenant: $tenant")
@@ -95,13 +129,26 @@ class PushApp private constructor() {
         if (!savedUserId.isNullOrEmpty()) {
             this.userId = savedUserId
             Log.d("PushApp", "Restored userId from storage: $savedUserId")
+            if (hasRegistered()) {
+                lifecycleState = SdkLifecycle.LOGGED_IN
+                Log.d("PushApp", "Restored session: register + login already completed")
+            }
             flushBufferedEvents()
             connectSocket()
         }
 
-        // Register device token after Firebase is initialized
-        registerDeviceToken()
+        return true
     }
+
+    private fun logSequenceError(required: String, actual: SdkLifecycle) {
+        Log.e(
+            "PushApp",
+            "SDK call order violation: $required (current state: $actual). " +
+                "Required order: initialize() → register() → login()",
+        )
+    }
+
+    fun isInitialized(): Boolean = lifecycleState != SdkLifecycle.NOT_INITIALIZED
 
     // ------------------ Persistent Device ID ------------------
 
@@ -198,10 +245,10 @@ class PushApp private constructor() {
                 // ✅ Token is the same — just send to server (keep-alive)
                 Log.d("PushApp", "✅ Token unchanged — calling sendTokenToServer()")
                 Log.d("PushApp", "✅ Last Token — $lastToken")
-                sendTokenToServer("firebase", newToken)
+                sendTokenToServer("android", newToken)
             } else if(lastToken == null){
                 Log.d("PushApp", "✅ New Token - $newToken")
-                sendTokenToServer("firebase", newToken)
+                sendTokenToServer("android", newToken)
             } else {
                 // 🔄 Token changed — update it on server
                 Log.d("PushApp", "🔄 Token changed — calling updateDeviceToken()")
@@ -220,7 +267,7 @@ class PushApp private constructor() {
 
     fun handleDeviceToken(token: String) {
         Log.d("PushApp", "Handling device token: $token")
-        sendTokenToServer("firebase", token)
+        sendTokenToServer("android", token)
     }
 
     // ------------------ Headers ------------------
@@ -266,6 +313,17 @@ class PushApp private constructor() {
             Log.e("PushApp", "Cannot send token: PushApp not initialized")
             return
         }
+        if (lifecycleState.ordinal < SdkLifecycle.REGISTERED.ordinal) {
+            Log.w(
+                "PushApp",
+                "Token received but register() was not called yet — caching locally. " +
+                    "Call register() after initialize() to register with the server.",
+            )
+            context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE).edit()
+                .putString("fcm_token", token)
+                .apply()
+            return
+        }
         if (hasRegistered()) {
             Log.d("PushApp", "Device already registered. Skipping registration.")
             return
@@ -277,14 +335,19 @@ class PushApp private constructor() {
      * POST push token to `/pushapp/api/device/register` (always sends; ignores [hasRegistered] gate).
      * Call from Capacitor after you obtain FCM (Android) or APNs/FCM (iOS) token in JS/native.
      */
-    fun registerPushToken(token: String, callback: (Boolean) -> Unit) {
-        if (serverUrl.isEmpty()) {
-            Log.e("PushApp", "Cannot register push token: PushApp not initialized")
+    fun register(token: String, callback: (Boolean) -> Unit) {
+        if (lifecycleState == SdkLifecycle.NOT_INITIALIZED || serverUrl.isEmpty()) {
+            logSequenceError("register() requires initialize() first", lifecycleState)
+            Handler(Looper.getMainLooper()).post { callback(false) }
+            return
+        }
+        if (token.isBlank()) {
+            Log.e("PushApp", "register() failed: push token is empty")
             Handler(Looper.getMainLooper()).post { callback(false) }
             return
         }
         // Android always sends FCM token in `token` with platform `firebase`.
-        postDeviceRegister("firebase", token, callback = callback)
+        postDeviceRegister("android", token, callback = callback)
     }
 
     private fun postDeviceRegister(platform: String, token: String, callback: ((Boolean) -> Unit)?) {
@@ -309,7 +372,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Failed to send token to server: ${e.message}")
                 callback?.let { cb ->
@@ -324,6 +387,8 @@ class PushApp private constructor() {
                     Log.d("PushApp", "SendToken API success, code=${response.code}")
                     Log.d("PushApp", "Response Body: $responseBody")
                     setRegistered()
+                    lifecycleState = SdkLifecycle.REGISTERED
+                    Log.d("PushApp", "SDK registered — next: call login()")
                     context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE).edit()
                         .putString("fcm_token", token)
                         .apply()
@@ -353,13 +418,22 @@ class PushApp private constructor() {
 
     // ------------------ Login ------------------
 
-    fun login(userId: String) {
-        if (serverUrl.isEmpty()) {
-            Log.e("PushApp", "PushApp not initialized. Call initialize() first.")
-            return
+    fun login(userId: String): Boolean {
+        if (lifecycleState == SdkLifecycle.NOT_INITIALIZED || serverUrl.isEmpty()) {
+            logSequenceError("login() requires initialize() first", lifecycleState)
+            return false
         }
-        
+        if (lifecycleState == SdkLifecycle.INITIALIZED) {
+            logSequenceError("login() requires register() first", lifecycleState)
+            return false
+        }
+        if (userId.isBlank()) {
+            Log.e("PushApp", "login() failed: userId is empty")
+            return false
+        }
+
         this.userId = userId
+        lifecycleState = SdkLifecycle.LOGGED_IN
         val url = "$serverUrl/pushapp/api/device/link"
 
         val json = JSONObject().apply {
@@ -380,7 +454,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Login API failed: ${e.message}")
             }
@@ -403,9 +477,8 @@ class PushApp private constructor() {
                 response.close()
             }
         })
+        return true
     }
-
-    // ------------------ Create or Update Customer Profile (PUT) ------------------
 
     /**
      * Creates or updates customer profile. Call after login with the same `code` your app uses (e.g. userId_deviceId).
@@ -448,7 +521,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Customer profile PUT: $url")
         Log.d("PushApp", "Request Body: ${bodyJson.toString(2)}")
 
-        OkHttpClient().newCall(requestBuilder.build()).enqueue(object : Callback {
+        httpClient.newCall(requestBuilder.build()).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Customer profile request failed: ${e.message}")
                 Handler(Looper.getMainLooper()).post { callback(false) }
@@ -504,7 +577,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Event send failed: ${e.message}")
             }
@@ -553,7 +626,7 @@ class PushApp private constructor() {
             Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
             val request = requestBuilder.build()
-            OkHttpClient().newCall(request).enqueue(object : Callback {
+            httpClient.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     Log.e("PushApp", "🔥 Error updating device token: ${e.message}")
                 }
@@ -597,7 +670,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Ack send failed: ${e.message}")
             }
@@ -649,7 +722,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Track send failed: ${e.message}")
             }
@@ -701,7 +774,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Notification Track failed: ${e.message}")
             }
@@ -743,7 +816,7 @@ class PushApp private constructor() {
         Log.d("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
-        OkHttpClient().newCall(request).enqueue(object : Callback {
+        httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("PushApp", "Poll in-app failed: ${e.message}")
             }
@@ -971,7 +1044,7 @@ class PushApp private constructor() {
         }
 
         webSocketManager?.disconnect()
-        webSocketManager = WebSocketManager(id, tenant) { data ->
+        webSocketManager = WebSocketManager(id, tenant, sandbox) { data ->
             Log.d("PushApp", "WebSocket received data: $data")
             handleSocketMessage(data)
         }

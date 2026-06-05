@@ -14,8 +14,13 @@ public class PushAppPlugin: CAPPlugin {
         }
 
         let sandbox = call.getBool("sandbox") ?? false
+        let slackWebhookUrl = call.getString("slackWebhookUrl")
 
-        PushApp.shared.initialize(appId: appId, sandbox: sandbox)
+        let initialized = PushApp.shared.initialize(appId: appId, sandbox: sandbox, slackWebhookUrl: slackWebhookUrl)
+        if !initialized {
+            call.reject("Initialize failed. Check Xcode console for PushApp errors (invalid appId or setup issue).")
+            return
+        }
 
         call.resolve([
             "status": "initialized"
@@ -23,18 +28,23 @@ public class PushAppPlugin: CAPPlugin {
     }
 
     /// POST push token to `/pushapp/api/device/register`. Call after `initialize` when you have APNs (hex) or FCM token.
-    @objc func registerPushToken(_ call: CAPPluginCall) {
+    @objc func register(_ call: CAPPluginCall) {
         let apnsToken = call.getString("apnsToken") ?? call.getString("token")
         guard let apnsToken = apnsToken, !apnsToken.isEmpty else {
             call.reject("apnsToken is required on iOS")
             return
         }
+        if !PushApp.shared.isInitialized {
+            print("PushAppPlugin: register() called before initialize()")
+            call.reject("Call PushApp.initialize() before register()")
+            return
+        }
         let fcmToken = call.getString("fcmToken")
-        PushApp.shared.registerPushToken(apnsToken: apnsToken, fcmToken: fcmToken) { success in
+        PushApp.shared.register(apnsToken: apnsToken, fcmToken: fcmToken) { success in
             if success {
                 call.resolve(["status": "registered", "success": true])
             } else {
-                call.reject("Device register failed")
+                call.reject("Device register failed. Ensure initialize() was called first and the token is valid.")
             }
         }
     }
@@ -46,7 +56,11 @@ public class PushAppPlugin: CAPPlugin {
             return
         }
 
-        PushApp.shared.login(userId: userId)
+        let loggedIn = PushApp.shared.login(userId: userId)
+        if !loggedIn {
+            call.reject("Call PushApp.initialize() then register() before login(). See Xcode console tag PushApp.")
+            return
+        }
 
         call.resolve([
             "status": "logged_in"

@@ -1,6 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { NavController } from '@ionic/angular';
 import { PushApp } from 'pushapp-ionic';
+import { slackWebhookInitOption } from '../environments/slack-webhook';
 
 @Component({
   selector: 'app-root',
@@ -24,7 +25,8 @@ export class AppComponent implements OnInit {
       try {
         await PushApp.initialize({
           appId: "demo_1763369170735",
-          sandbox: false
+          sandbox: false,
+          ...slackWebhookInitOption(),
         });
         
         // // Re-login with saved username

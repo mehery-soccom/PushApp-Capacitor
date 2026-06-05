@@ -12,7 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.app.NotificationManager
 import android.graphics.drawable.GradientDrawable
-import com.pushapp.ionic.R
+import com.mehery.pushapp.R
 
 
 class CustomNotificationService(private val context: Context) {

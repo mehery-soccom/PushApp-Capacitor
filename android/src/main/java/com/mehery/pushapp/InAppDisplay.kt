@@ -34,7 +34,7 @@ import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.pushapp.ionic.R
+import com.mehery.pushapp.R
 import org.json.JSONException
 import org.json.JSONObject
 import kotlin.math.roundToInt

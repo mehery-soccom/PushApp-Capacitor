@@ -7,7 +7,7 @@ import android.util.Log
 import android.webkit.WebView
 import androidx.annotation.AttrRes
 import androidx.annotation.StyleRes
-import com.pushapp.ionic.R
+import com.mehery.pushapp.R
 
 /**
  * Custom WebView that automatically registers itself as a placeholder

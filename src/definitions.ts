@@ -18,7 +18,9 @@ export interface PushAppPlugin {
    * Use `identifier` only for backward compatibility; it is the same value as `appId`.
    */
   initialize(
-    options: { appId: string; sandbox?: boolean } | { identifier: string; sandbox?: boolean },
+    options:
+      | { appId: string; sandbox?: boolean; slackWebhookUrl?: string }
+      | { identifier: string; sandbox?: boolean; slackWebhookUrl?: string },
   ): Promise<{ status: string }>;
   /**
    * POST push token to `/pushapp/api/device/register` (same as native auto-register).
@@ -27,7 +29,7 @@ export interface PushAppPlugin {
    * - iOS: provide `apnsToken` (sent as backend `token`) and optional `fcmToken` (sent as backend `fcm_token`).
    * Legacy fallback: `token` is accepted as alias for the platform primary token.
    */
-  registerPushToken(options: { apnsToken?: string; fcmToken?: string; token?: string }): Promise<{ status: string; success: boolean }>;
+  register(options: { apnsToken?: string; fcmToken?: string; token?: string }): Promise<{ status: string; success: boolean }>;
   login(options: { userId: string }): Promise<{ status: string }>;
   /** Create or update customer profile (PUT). Call after login with code = userId_deviceId. */
   saveUserData(options: { code: string; additionalInfo: Record<string, unknown>; cohorts: Record<string, unknown> }): Promise<{ status: string; success: boolean }>;

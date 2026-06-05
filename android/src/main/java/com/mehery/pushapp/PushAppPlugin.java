@@ -29,6 +29,7 @@ public class PushAppPlugin extends Plugin {
         }
 
         Boolean sandbox = call.getBoolean("sandbox", false);
+        String slackWebhookUrl = call.getString("slackWebhookUrl");
 
         // Get context from the plugin
         Context context = getContext();
@@ -37,7 +38,11 @@ public class PushAppPlugin extends Plugin {
             return;
         }
 
-        PushApp.Companion.getInstance().initialize(context, appId, sandbox);
+        boolean initialized = PushApp.Companion.getInstance().initialize(context, appId, sandbox, slackWebhookUrl);
+        if (!initialized) {
+            call.reject("Initialize failed. Check Logcat for PushApp errors (invalid appId or setup issue).");
+            return;
+        }
 
         // Set current activity if available
         Activity activity = getActivity();
@@ -54,7 +59,7 @@ public class PushAppPlugin extends Plugin {
      * POST push token to {@code /pushapp/api/device/register}. Call after {@code initialize} when you have the FCM token.
      */
     @PluginMethod
-    public void registerPushToken(PluginCall call) {
+    public void register(PluginCall call) {
         // Exposed API accepts both fields; Android uses FCM token as `token` in backend payload.
         String fcmToken = call.getString("fcmToken");
         if (fcmToken == null || fcmToken.isEmpty()) {
@@ -65,14 +70,19 @@ public class PushAppPlugin extends Plugin {
             call.reject("fcmToken is required on Android");
             return;
         }
-        PushApp.Companion.getInstance().registerPushToken(fcmToken, success -> {
+        if (!PushApp.Companion.getInstance().isInitialized()) {
+            android.util.Log.e("PushAppPlugin", "register() called before initialize()");
+            call.reject("Call PushApp.initialize() before register()");
+            return;
+        }
+        PushApp.Companion.getInstance().register(fcmToken, success -> {
             if (success) {
                 JSObject ret = new JSObject();
                 ret.put("status", "registered");
                 ret.put("success", true);
                 call.resolve(ret);
             } else {
-                call.reject("Device register failed");
+                call.reject("Device register failed. Ensure initialize() was called first and the token is valid.");
             }
             return Unit.INSTANCE;
         });
@@ -87,7 +97,11 @@ public class PushAppPlugin extends Plugin {
             return;
         }
 
-        PushApp.Companion.getInstance().login(userId);
+        boolean loggedIn = PushApp.Companion.getInstance().login(userId);
+        if (!loggedIn) {
+            call.reject("Call PushApp.initialize() then register() before login(). See Logcat tag PushApp.");
+            return;
+        }
 
         JSObject ret = new JSObject();
         ret.put("status", "logged_in");

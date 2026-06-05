@@ -13,13 +13,15 @@ Your Ionic/Capacitor app should include all of the following:
   - iOS: `ios/App/GoogleService-Info.plist`
 - Push capability on iOS and foreground notification handling in `AppDelegate.swift`
 - SDK initialization at app startup (`PushApp.initialize`)
-- Push token registration from app code (`PushApp.registerPushToken`)
+- Push token registration from app code (`PushApp.register`)
 - User identity and tracking calls where they match your user journey:
   - `PushApp.login`
   - `PushApp.setPageName`
   - `PushApp.sendEvent`
   - `PushApp.saveUserData` (after login)
 - Placeholder/tooltip registration only if you use inline/tooltip in-app surfaces
+
+Call these in order: **`initialize()` → `register()` → `login()`**. Wrong order is logged on the native side and the promise is rejected (the app will not crash).
 
 ---
 
@@ -86,10 +88,10 @@ await PushApp.initialize({
 
 ```typescript
 // Android
-await PushApp.registerPushToken({ fcmToken });
+await PushApp.register({ fcmToken });
 
 // iOS
-await PushApp.registerPushToken({
+await PushApp.register({
   apnsToken,
   fcmToken, // optional
 });
@@ -231,7 +233,7 @@ ngOnDestroy() {
 ### Core Methods
 
 #### `initialize(options)`
-Initialize the SDK.
+Initialize the SDK. Call first.
 
 **Parameters:**
 - `appId` (string, required unless using legacy `identifier`): **App ID** — your full channel id (e.g. `demo_1763369170735`). The SDK derives the tenant subdomain from the substring before the first `_` (`demo` in this example). The channel id sent to APIs is this full App ID string.
@@ -240,8 +242,8 @@ Initialize the SDK.
 
 **Returns:** `Promise<{ status: string }>`
 
-#### `registerPushToken(options)`
-POST the push token to `/pushapp/api/device/register` (same endpoint as native auto-registration). Use when you obtain the token in TypeScript (e.g. `@capacitor/push-notifications`) instead of relying only on native registration.
+#### `register(options)`
+POST the push token to `/pushapp/api/device/register`. Call after `initialize()`.
 
 **Parameters:**
 - `apnsToken` (string, optional): iOS APNs token. This is sent as backend `token`.
@@ -259,20 +261,20 @@ import { PushApp } from 'pushapp-ionic';
 await PushApp.initialize({ appId: 'demo_1763369170735', sandbox: false });
 
 PushNotifications.addListener('registration', async (info) => {
-  await PushApp.registerPushToken({ fcmToken: info.value });
+  await PushApp.register({ fcmToken: info.value });
 });
 ```
 
 ```typescript
 // iOS example: APNs token required, FCM token optional
-await PushApp.registerPushToken({
+await PushApp.register({
   apnsToken: apnsTokenValue,
   fcmToken: fcmTokenValue, // optional
 });
 ```
 
 #### `login(options)`
-Login a user to the SDK.
+Login a user to the SDK. Call after `register()`.
 
 **Parameters:**
 - `userId` (string, required): Unique user identifier
@@ -388,7 +390,7 @@ See the `example-app/` directory for a complete working example including:
 
 ## 🏷️ Version
 
-Current version: `0.0.2`
+Current version: `0.0.9`
 
 ---
 

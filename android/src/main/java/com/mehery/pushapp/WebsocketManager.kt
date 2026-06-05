@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 class WebSocketManager(
     private val userId: String,
     private val tenant: String,
+    private val sandbox: Boolean,
     private val onMessage: (Map<String, Any>) -> Unit
 ) : WebSocketListener() {
 
@@ -19,7 +20,8 @@ class WebSocketManager(
 
     private val url: String
         get() {
-            val baseUrl = "wss://$tenant.pushapp.co.in/pushapp"
+            val host = if (sandbox) "$tenant.pushapp.ai" else "$tenant.pushapp.co.in"
+            val baseUrl = "wss://$host/pushapp"
 //            val baseUrl = "wss://1b790b9b08a8.ngrok-free.app/pushapp"
 //            Log.d("WebSocketManager", "WebSocket URL: $baseUrl")
             return baseUrl
