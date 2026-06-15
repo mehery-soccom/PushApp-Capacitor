@@ -93,7 +93,7 @@ class PushApp private constructor() {
         this.sandbox = sandbox
 
         // Set serverUrl BEFORE other operations that might need it
-        serverUrl = if (sandbox) "https://$tenant.pushapp.ai" else "https://$tenant.pushapp.co.in"
+        serverUrl = if (sandbox) "https://$tenant.pushapp.co.in" else "https://$tenant.pushapp.ai"
         lifecycleState = SdkLifecycle.INITIALIZED
         Log.d("PushApp", "SDK initialized — next: call register() with push token, then login()")
         Log.d("PushApp", "Server URL: $serverUrl")
@@ -242,9 +242,12 @@ class PushApp private constructor() {
             }
 
             if (lastToken == newToken) {
-                // ✅ Token is the same — just send to server (keep-alive)
-                Log.d("PushApp", "✅ Token unchanged — calling sendTokenToServer()")
-                Log.d("PushApp", "✅ Last Token — $lastToken")
+                if (hasRegistered()) {
+                    Log.d("PushApp", "Token unchanged and device already registered — skipping register API")
+                    return@addOnCompleteListener
+                }
+                Log.d("PushApp", "Token unchanged — calling sendTokenToServer()")
+                Log.d("PushApp", "Last Token — $lastToken")
                 sendTokenToServer("android", newToken)
             } else if(lastToken == null){
                 Log.d("PushApp", "✅ New Token - $newToken")
@@ -332,7 +335,8 @@ class PushApp private constructor() {
     }
 
     /**
-     * POST push token to `/pushapp/api/device/register` (always sends; ignores [hasRegistered] gate).
+     * POST push token to `/pushapp/api/device/register`.
+     * Skips the API when the device is already registered with the same FCM token.
      * Call from Capacitor after you obtain FCM (Android) or APNs/FCM (iOS) token in JS/native.
      */
     fun register(token: String, callback: (Boolean) -> Unit) {
@@ -341,13 +345,31 @@ class PushApp private constructor() {
             Handler(Looper.getMainLooper()).post { callback(false) }
             return
         }
-        if (token.isBlank()) {
-            Log.e("PushApp", "register() failed: push token is empty")
+        val prefs = context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE)
+        val tokenToSend = token.ifBlank {
+            prefs.getString("fcm_token", null).orEmpty()
+        }
+        if (tokenToSend.isBlank()) {
+            Log.e("PushApp", "register() failed: push token is empty (wait for FCM token or pass fcmToken from JS)")
             Handler(Looper.getMainLooper()).post { callback(false) }
             return
         }
-        // Android always sends FCM token in `token` with platform `firebase`.
-        postDeviceRegister("android", token, callback = callback)
+        if (token.isBlank()) {
+            Log.d("PushApp", "Using cached FCM token for register()")
+        }
+        if (hasRegistered()) {
+            val savedToken = prefs.getString("fcm_token", null)
+            if (savedToken == tokenToSend) {
+                Log.d("PushApp", "Device already registered with same token — skipping register API")
+                if (lifecycleState == SdkLifecycle.INITIALIZED) {
+                    lifecycleState = SdkLifecycle.REGISTERED
+                }
+                Handler(Looper.getMainLooper()).post { callback(true) }
+                return
+            }
+            Log.d("PushApp", "FCM token changed — re-registering device")
+        }
+        postDeviceRegister("android", tokenToSend, callback = callback)
     }
 
     private fun postDeviceRegister(platform: String, token: String, callback: ((Boolean) -> Unit)?) {
@@ -835,7 +857,8 @@ class PushApp private constructor() {
                             if (success) {
                                 val results = jsonResponse.optJSONArray("results")
                                 if (results != null && results.length() > 0) {
-                                    val inAppItems = mutableListOf<Map<String, Any>>()
+                                    val overlayItems = mutableListOf<Map<String, Any>>()
+                                    val inlineItems = mutableListOf<Triple<String, String, String>>()
 
                                     for (i in 0 until results.length()) {
                                         val item = results.getJSONObject(i)
@@ -937,21 +960,14 @@ class PushApp private constructor() {
                                         val draggable = style?.optBoolean("draggable") ?: false
                                         var placeholderId = eventData?.optString("compare") ?: ""
 
-                                        // 🔹 Check if placeholderId exists - dispatch to placeholder instead of showing as banner/roadblock
-                                        if (placeholderId.isNotBlank()) {
-                                            Log.d("PushApp", "Dispatching to placeholder: $placeholderId")
-                                            // Send ack for the message
-                                            ackInApp(messageId)
-                                            // Dispatch HTML to placeholder
-                                            PushAppPlaceholderManager.dispatchPlaceholderContent(
-                                                placeholderId,
-                                                messageId,
-                                                html
-                                            )
+                                        // Inline: route to registered placeholder (after overlays, like iOS)
+                                        if (layoutCode.contains("inline", ignoreCase = true) && placeholderId.isNotBlank()) {
+                                            Log.d("PushApp", "Queued inline for placeholder: $placeholderId")
+                                            inlineItems.add(Triple(placeholderId, messageId, html))
                                             continue
                                         }
 
-                                        inAppItems.add(
+                                        overlayItems.add(
                                             mapOf(
                                                 "code" to layoutCode,
                                                 "html" to html,
@@ -965,18 +981,42 @@ class PushApp private constructor() {
                                             )
                                         )
 
-                                        Log.d("PushApp", "In App Items: $inAppItems")
+                                        Log.d("PushApp", "Overlay items queued: ${overlayItems.size}, inline: ${inlineItems.size}")
                                     }
 
-                                    if (inAppItems.isNotEmpty()) {
+                                    val dispatchInlineItems = {
+                                        for ((placeholderId, messageId, html) in inlineItems) {
+                                            Log.d("PushApp", "Dispatching to placeholder: $placeholderId")
+                                            ackInApp(messageId)
+                                            PushAppPlaceholderManager.dispatchPlaceholderContent(
+                                                placeholderId,
+                                                messageId,
+                                                html,
+                                            )
+                                        }
+                                    }
+
+                                    val activity = currentActivityRef?.get()
+                                    if (activity == null) {
+                                        Log.w("PushApp", "No activity for in-app display")
+                                        dispatchInlineItems()
+                                    } else if (overlayItems.isNotEmpty()) {
                                         try {
-                                            Log.d("PushApp", "Displaying ${inAppItems.size} in-app items sequentially")
-                                            val inAppDisplay = InAppDisplay(currentActivityRef?.get()!!)
-                                            inAppDisplay.showInApps(inAppItems)
+                                            Log.d("PushApp", "Displaying ${overlayItems.size} overlay in-app items")
+                                            activity.runOnUiThread {
+                                                InAppDisplay(activity).showInApps(overlayItems) {
+                                                    dispatchInlineItems()
+                                                }
+                                            }
                                         } catch (e: Exception) {
                                             Log.e("PushApp", "Error showing in-app: ${e.message}")
+                                            dispatchInlineItems()
                                         }
                                     } else {
+                                        dispatchInlineItems()
+                                    }
+
+                                    if (overlayItems.isEmpty() && inlineItems.isEmpty()) {
                                         Log.w("PushApp", "No valid in-app items to display")
                                     }
                                 } else {
@@ -1053,7 +1093,14 @@ class PushApp private constructor() {
 
     fun handleNotification(data: Map<String, String>) {
         Log.d("PushApp", "Handling notification data: $data")
-        // Your in-app notification or callback handling here
+
+        val type = data["type"]?.lowercase()
+        if (type == "in_app") {
+            handleSocketNotification(data)
+            return
+        }
+
+        PushNotificationDisplay.displayFromData(context, data)
     }
 
     private fun handleSocketMessage(data: Map<String, Any>) {

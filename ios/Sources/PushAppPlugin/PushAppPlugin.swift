@@ -163,17 +163,44 @@ public class PushAppPlugin: CAPPlugin {
     }
 
     // Call the updated PushApp SDK method with coordinates
+    let clipTop = call.getFloat("clipTop")
     PushApp.shared.registerPlaceholder(
             placeholderId: placeholderId,
             x: CGFloat(x),
             y: CGFloat(y),
             width: CGFloat(width),
             height: CGFloat(height),
-            webView: self.bridge?.webView // Pass the Capacitor Web View reference
+            webView: self.bridge?.webView, // Pass the Capacitor Web View reference
+            clipTop: clipTop.map { CGFloat($0) }
         )
 
         call.resolve([
             "status": "placeholder_registration_initiated"
+        ])
+    }
+
+    @objc func updatePlaceholder(_ call: CAPPluginCall) {
+        guard let placeholderId = call.getString("placeholderId"),
+              let x = call.getFloat("x"),
+              let y = call.getFloat("y"),
+              let width = call.getFloat("width"),
+              let height = call.getFloat("height") else {
+            call.reject("placeholderId, x, y, width, and height are required")
+            return
+        }
+
+        let clipTop = call.getFloat("clipTop")
+        PushApp.shared.updatePlaceholder(
+            placeholderId: placeholderId,
+            x: CGFloat(x),
+            y: CGFloat(y),
+            width: CGFloat(width),
+            height: CGFloat(height),
+            clipTop: clipTop.map { CGFloat($0) }
+        )
+
+        call.resolve([
+            "status": "placeholder_updated"
         ])
     }
 

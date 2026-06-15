@@ -1,23 +1,65 @@
-<ion-header>
-  <ion-toolbar>
-    <ion-title>Login</ion-title>
-  </ion-toolbar>
-</ion-header>
+<ion-content [fullscreen]="true" class="login-content">
+  <div class="login-bg">
+    <div class="login-bg-shape shape-a"></div>
+    <div class="login-bg-shape shape-b"></div>
+  </div>
 
-<ion-content class="ion-padding">
+  <div class="login-shell">
+    <div class="brand-block">
+      <div class="brand-logo">
+        <ion-icon name="bag-handle-outline"></ion-icon>
+      </div>
+      <h1 class="brand-name">WaveMart</h1>
+      <p class="brand-tagline">Curated picks. Lightning delivery.</p>
+    </div>
 
-  <ion-item>
-    <ion-label position="floating">Username</ion-label>
-    <ion-input [(ngModel)]="username"></ion-input>
-  </ion-item>
+    <div class="login-card">
+      <h2 class="login-title">Welcome back</h2>
+      <p class="login-subtitle">Sign in to track orders &amp; deals</p>
 
-  <ion-item>
-    <ion-label position="floating">Password</ion-label>
-    <ion-input [(ngModel)]="password" type="password"></ion-input>
-  </ion-item>
+      <div class="field-group">
+        <label class="field-label">Email or username</label>
+        <div class="field-input-wrap">
+          <ion-icon name="person-outline" class="field-icon"></ion-icon>
+          <ion-input
+            [(ngModel)]="username"
+            placeholder="you@wavemart.demo"
+            type="text"
+            autocomplete="username">
+          </ion-input>
+        </div>
+      </div>
 
-  <ion-button expand="full" class="ion-margin-top" (click)="login()">
-    Login
-  </ion-button>
+      <div class="field-group">
+        <label class="field-label">Password</label>
+        <div class="field-input-wrap">
+          <ion-icon name="lock-closed-outline" class="field-icon"></ion-icon>
+          <ion-input
+            [(ngModel)]="password"
+            placeholder="••••••••"
+            type="password"
+            autocomplete="current-password">
+          </ion-input>
+        </div>
+      </div>
 
+      <ion-button expand="block" class="login-btn" (click)="login()">
+        Continue shopping
+        <ion-icon slot="end" name="arrow-forward"></ion-icon>
+      </ion-button>
+
+      <p class="login-hint">Demo app — any username works</p>
+    </div>
+
+    <div class="trust-row">
+      <div class="trust-item">
+        <ion-icon name="shield-checkmark-outline"></ion-icon>
+        <span>Secure checkout</span>
+      </div>
+      <div class="trust-item">
+        <ion-icon name="rocket-outline"></ion-icon>
+        <span>Same-day delivery</span>
+      </div>
+    </div>
+  </div>
 </ion-content>

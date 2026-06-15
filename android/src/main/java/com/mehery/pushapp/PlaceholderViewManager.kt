@@ -3,10 +3,15 @@ package com.mehery.pushapp
 import android.app.Activity
 import android.graphics.Rect
 import android.util.Log
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.webkit.WebView
+import androidx.core.view.ViewCompat
+import kotlin.math.max
 import kotlin.math.roundToInt
+
+private const val INLINE_PLACEHOLDER_Z = 1f
+private const val OVERLAY_Z = 20_000f
 
 data class TooltipTargetInfo(
     val targetId: String,
@@ -25,94 +30,117 @@ object PlaceholderViewManager {
     private val placeholderViews = mutableMapOf<String, PlaceholderView>()
     private val tooltipTargets = mutableMapOf<String, TooltipTargetInfo>()
 
+    private data class ClippedRect(
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
+        val visible: Boolean,
+    )
+
+    private fun clipToTopChrome(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        clipTop: Int?,
+    ): ClippedRect {
+        if (clipTop == null || clipTop <= 0) {
+            return ClippedRect(x, y, width, height, width > 0 && height > 0)
+        }
+
+        val bottom = y + height
+        if (bottom <= clipTop) {
+            return ClippedRect(x, y, width, 0, false)
+        }
+
+        if (y < clipTop) {
+            return ClippedRect(x, clipTop, width, bottom - clipTop, true)
+        }
+
+        return ClippedRect(x, y, width, height, height > 0)
+    }
+
     fun createPlaceholderView(
         activity: Activity,
         placeholderId: String,
-        x: Int,  // In viewport pixels from JavaScript
-        y: Int,  // In viewport pixels from JavaScript
-        width: Int,  // In viewport pixels from JavaScript
-        height: Int  // In viewport pixels from JavaScript
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        clipTop: Int? = null,
     ) {
-        // We will use the density scale to convert JavaScript's viewport pixels (which may be scaled DPs)
-        // into physical Android pixels (px) for layout parameters.
-        val scale: Float = activity.resources.displayMetrics.density
+        val clipped = clipToTopChrome(x, y, width, height, clipTop)
+        val scale = activity.resources.displayMetrics.density
+        val scaledX = (clipped.x.toFloat() * scale).roundToInt()
+        val scaledY = (clipped.y.toFloat() * scale).roundToInt()
+        val scaledWidth = max((clipped.width.toFloat() * scale).roundToInt(), (120 * scale).roundToInt())
+        val scaledHeight = if (clipped.visible) {
+            max((clipped.height.toFloat() * scale).roundToInt(), (120 * scale).roundToInt())
+        } else {
+            0
+        }
 
-        // --- NEW LOGIC: Scale all JavaScript coordinates/dimensions to Android pixels ---
-        val scaledX = (x.toFloat() * scale).roundToInt()
-        val scaledY = (y.toFloat() * scale).roundToInt()
-        val scaledWidth = (width.toFloat() * scale).roundToInt()
-        val scaledHeight = (height.toFloat() * scale).roundToInt()
-        // -----------------------------------------------------------------------------
-
-        // Remove existing placeholder if any
         removePlaceholderView(activity, placeholderId)
 
         Log.d(TAG, "Creating placeholder view: $placeholderId at viewport ($x, $y) size ${width}x${height}")
 
-        // Get the window's decor view (top-level view)
         val rootView = activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
             ?: return
 
-        // JavaScript getBoundingClientRect() gives coordinates relative to the viewport
-        // We need to account for the content view's position relative to the screen (status bar offset)
-        val contentViewLocation = IntArray(2)
-        rootView.getLocationOnScreen(contentViewLocation)
-        val contentViewX = contentViewLocation[0]
-        val contentViewY = contentViewLocation[1]
-
-        // The scaled Y coordinate is relative to the viewport's top edge (0).
-        // The content view starts at contentViewY.
-        // If we use the content view as the parent, we need to shift the Y coordinate down
-        // by the content view's top offset relative to the screen top (contentViewY).
-        // However, since the WebView usually fills the content view, the scaledY (from JS)
-        // should already be relative to the content area (assuming a standard setup).
-        // We will rely on the scaled coordinates and margins relative to the rootView.
-        val absoluteX = scaledX
-        val absoluteY = scaledY
-
-        Log.d(TAG, "Coordinates: viewport ($x, $y) -> Scaled PX ($scaledX, $scaledY)")
-        Log.d(TAG, "ContentView location on screen: ($contentViewX, $contentViewY)")
-
-        // Create placeholder view
         val placeholderView = PlaceholderView(activity)
         placeholderView.setPlaceholderId(placeholderId)
 
-        // Set layout parameters using the scaled PX values
-        val params = FrameLayout.LayoutParams(
-            scaledWidth, // Use scaled width
-            scaledHeight // Use scaled height
-        )
+        val params = FrameLayout.LayoutParams(scaledWidth, scaledHeight)
+        params.leftMargin = scaledX
+        params.topMargin = scaledY
 
-        // Set position (absolute coordinates relative to content view)
-        params.leftMargin = absoluteX
-        params.topMargin = absoluteY
-
-        // Make sure it's on top
-        placeholderView.setZ(1000f)
-
-        // Make it non-interactive so touches pass through when empty/transparent
+        placeholderView.setZ(INLINE_PLACEHOLDER_Z)
+        ViewCompat.setElevation(placeholderView, INLINE_PLACEHOLDER_Z)
         placeholderView.isClickable = false
         placeholderView.isFocusable = false
         placeholderView.isFocusableInTouchMode = false
+        placeholderView.layoutParams = params
+        placeholderView.visibility = if (clipped.visible && scaledHeight > 0) View.VISIBLE else View.INVISIBLE
 
+        rootView.addView(placeholderView)
+        rootView.requestLayout()
+
+        placeholderViews[placeholderId] = placeholderView
+        Log.d(TAG, "Placeholder view created: $placeholderId at ($scaledX, $scaledY) size ${scaledWidth}x${scaledHeight}")
+    }
+
+    fun updatePlaceholderView(
+        activity: Activity,
+        placeholderId: String,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        clipTop: Int? = null,
+    ) {
+        val placeholderView = placeholderViews[placeholderId] ?: return
+
+        val clipped = clipToTopChrome(x, y, width, height, clipTop)
+        val scale = activity.resources.displayMetrics.density
+        val scaledX = (clipped.x.toFloat() * scale).roundToInt()
+        val scaledY = (clipped.y.toFloat() * scale).roundToInt()
+        val scaledWidth = max((clipped.width.toFloat() * scale).roundToInt(), 1)
+        val scaledHeight = (clipped.height.toFloat() * scale).roundToInt()
+
+        val params = placeholderView.layoutParams as? FrameLayout.LayoutParams ?: return
+        params.width = scaledWidth
+        params.height = scaledHeight
+        params.leftMargin = scaledX
+        params.topMargin = scaledY
         placeholderView.layoutParams = params
 
-        // Add to root view (will overlay the WebView)
-        rootView.addView(placeholderView)
-
-        // Store reference
-        placeholderViews[placeholderId] = placeholderView
-
-        Log.d(TAG, "Placeholder view created and added: $placeholderId at ($absoluteX, $absoluteY) in PX")
-    }
-    
-    private fun getStatusBarHeight(activity: Activity): Int {
-        var result = 0
-        val resourceId = activity.resources.getIdentifier("status_bar_height", "dimen", "android")
-        if (resourceId > 0) {
-            result = activity.resources.getDimensionPixelSize(resourceId)
-        }
-        return result
+        val screenHeight = activity.resources.displayMetrics.heightPixels
+        val onScreen = clipped.visible &&
+            scaledHeight > 0 &&
+            scaledY + scaledHeight > 0 &&
+            scaledY < screenHeight
+        placeholderView.visibility = if (onScreen) View.VISIBLE else View.INVISIBLE
     }
 
     fun removePlaceholderView(activity: Activity, placeholderId: String) {
@@ -129,54 +157,48 @@ object PlaceholderViewManager {
     }
 
     fun removeAllPlaceholderViews(activity: Activity) {
-        val ids = placeholderViews.keys.toList()
-        ids.forEach { removePlaceholderView(activity, it) }
+        placeholderViews.keys.toList().forEach { removePlaceholderView(activity, it) }
     }
 
-    // ⭐️ NEW: Register tooltip target
     fun registerTooltipTarget(
         activity: Activity,
         targetId: String,
         x: Int,
         y: Int,
         width: Int,
-        height: Int
+        height: Int,
     ) {
         Log.d(TAG, "Registering tooltip target: $targetId at ($x, $y) size ${width}x${height}")
 
-        // Convert from pixels to dp if needed (coordinates come from JavaScript as pixels)
-        val density = activity.resources.displayMetrics.density
-        val targetInfo = TooltipTargetInfo(
+        tooltipTargets[targetId] = TooltipTargetInfo(
             targetId = targetId,
-            x = x, // Already in pixels from JS
-            y = y, // Already in pixels from JS
-            width = width, // Already in pixels from JS
-            height = height // Already in pixels from JS
+            x = x,
+            y = y,
+            width = width,
+            height = height,
         )
 
-        tooltipTargets[targetId] = targetInfo
-
-        // Send widget_open event with compare=targetId
         Log.d(TAG, "Sending widget_open event with compare=$targetId")
         PushApp.getInstance().sendEvent("widget_open", mapOf("compare" to targetId))
         Log.d(TAG, "widget_open event sent for tooltip target: $targetId")
     }
 
-    // ⭐️ NEW: Unregister tooltip target
     fun unregisterTooltipTarget(activity: Activity, targetId: String) {
         Log.d(TAG, "Unregistering tooltip target: $targetId")
         tooltipTargets.remove(targetId)
         Log.d(TAG, "Tooltip target removed: $targetId")
     }
 
-    // ⭐️ NEW: Get tooltip target info
     fun getTooltipTarget(targetId: String): TooltipTargetInfo? {
         return tooltipTargets[targetId]
     }
 
-    // ⭐️ NEW: Get all tooltip target IDs
     fun getAllTooltipTargetIds(): Set<String> {
         return tooltipTargets.keys
     }
-}
 
+    fun setPlaceholdersVisible(visible: Boolean) {
+        val visibility = if (visible) android.view.View.VISIBLE else android.view.View.INVISIBLE
+        placeholderViews.values.forEach { it.visibility = visibility }
+    }
+}

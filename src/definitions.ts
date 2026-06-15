@@ -1,13 +1,20 @@
 // Example: In your plugin's definitions.ts or index.d.ts file
 
-/**
- * Defines the common coordinate and dimension options for UI element registration.
- */
+export interface PlaceholderRegisterOptions {
+  placeholderId: string;
+  /** HTML element id; defaults to `placeholderId`. Must exist in the page DOM. */
+  elementId?: string;
+  /** CSS selector for fixed top chrome; bottom edge is used as `clipTop`. Defaults to `ion-header`. */
+  clipTopSelector?: string;
+}
+
 export interface UIOptions {
-  x: number; // Must be required when calling from web
-  y: number; // Must be required when calling from web
+  x: number;
+  y: number;
   width: number;
   height: number;
+  /** Viewport Y (px) below fixed header/chrome; inline content is clipped/hidden above this line. Set automatically when using registerPlaceholder on native. */
+  clipTop?: number;
 }
 
 export interface PushAppPlugin {
@@ -23,8 +30,8 @@ export interface PushAppPlugin {
       | { identifier: string; sandbox?: boolean; slackWebhookUrl?: string },
   ): Promise<{ status: string }>;
   /**
-   * POST push token to `/pushapp/api/device/register` (same as native auto-register).
-   * Call after `initialize`.
+   * POST push token to `/pushapp/api/device/register`.
+   * Call after `initialize`. Skips the API when the device is already registered with the same token.
    * - Android: provide `fcmToken` (it is sent as backend `token`).
    * - iOS: provide `apnsToken` (sent as backend `token`) and optional `fcmToken` (sent as backend `fcm_token`).
    * Legacy fallback: `token` is accepted as alias for the platform primary token.
@@ -38,8 +45,15 @@ export interface PushAppPlugin {
   setPageName(options: { pageName: string }): Promise<{ status: string }>;
   
   // Inline Placeholder Methods
-  registerPlaceholder(options: { placeholderId: string } & UIOptions): Promise<{ status: string }>;
-  unregisterPlaceholder(options: { placeholderId: string }): Promise<{ status: string }>; // Assuming you added this unregister method
+  /**
+   * Register an inline placeholder. On native platforms the SDK tracks DOM position
+   * (scroll, resize, fixed headers) automatically — pass `placeholderId` only.
+   * The HTML element id should match `placeholderId` unless `elementId` is set.
+   */
+  registerPlaceholder(options: PlaceholderRegisterOptions): Promise<{ status: string }>;
+  /** @internal Used by the SDK to reposition inline placeholders during scroll sync. */
+  updatePlaceholder(options: { placeholderId: string } & UIOptions): Promise<{ status: string }>;
+  unregisterPlaceholder(options: { placeholderId: string }): Promise<{ status: string }>;
 
   // ⭐️ NEW: Tooltip Target Methods
   /** Registers a UI element as an anchor target for native tooltips/popovers. */

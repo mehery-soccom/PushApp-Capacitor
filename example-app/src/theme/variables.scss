@@ -1,2 +1,35 @@
-// For information on how to create your own theme, please refer to:
-// https://ionicframework.com/docs/theming/
+// WaveMart — demo ecommerce theme
+:root {
+  --ion-color-primary: #5b4cdb;
+  --ion-color-primary-rgb: 91, 76, 219;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-color-primary-contrast-rgb: 255, 255, 255;
+  --ion-color-primary-shade: #5043c1;
+  --ion-color-primary-tint: #6b5edf;
+
+  --ion-color-secondary: #ff6b4a;
+  --ion-color-secondary-rgb: 255, 107, 74;
+  --ion-color-secondary-contrast: #ffffff;
+  --ion-color-secondary-contrast-rgb: 255, 255, 255;
+  --ion-color-secondary-shade: #e05e41;
+  --ion-color-secondary-tint: #ff7a5c;
+
+  --ion-color-tertiary: #14b8a6;
+  --ion-color-tertiary-rgb: 20, 184, 166;
+  --ion-color-tertiary-contrast: #ffffff;
+  --ion-color-tertiary-contrast-rgb: 255, 255, 255;
+  --ion-color-tertiary-shade: #12a292;
+  --ion-color-tertiary-tint: #2cbfaf;
+
+  --ion-background-color: #f4f6fb;
+  --ion-background-color-rgb: 244, 246, 251;
+  --ion-text-color: #1a1d2e;
+  --ion-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+
+  --wave-surface: #ffffff;
+  --wave-muted: #6b7280;
+  --wave-border: rgba(26, 29, 46, 0.08);
+  --wave-shadow: 0 8px 32px rgba(26, 29, 46, 0.08);
+  --wave-shadow-lg: 0 16px 48px rgba(91, 76, 219, 0.18);
+  --wave-gradient: linear-gradient(135deg, #5b4cdb 0%, #7c3aed 45%, #ff6b4a 100%);
+}

@@ -20,7 +20,7 @@ class WebSocketManager(
 
     private val url: String
         get() {
-            val host = if (sandbox) "$tenant.pushapp.ai" else "$tenant.pushapp.co.in"
+            val host = if (sandbox) "$tenant.pushapp.co.in" else "$tenant.pushapp.ai"
             val baseUrl = "wss://$host/pushapp"
 //            val baseUrl = "wss://1b790b9b08a8.ngrok-free.app/pushapp"
 //            Log.d("WebSocketManager", "WebSocket URL: $baseUrl")

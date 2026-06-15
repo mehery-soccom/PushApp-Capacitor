@@ -13,7 +13,7 @@ This guide explains how to integrate the **PushApp Ionic/Capacitor SDK** into yo
 | Item | Description |
 |------|-------------|
 | **App ID** | Your channel id, e.g. `yourtenant_1234567890`. The part before the first `_` is your tenant name. |
-| **Environment** | Production (`sandbox: false`) or sandbox (`sandbox: true`). |
+| **Environment** | Production (`sandbox: false` → `{tenant}.pushapp.ai`) or sandbox (`sandbox: true` → `{tenant}.pushapp.co.in`). |
 | **Firebase project** | You configure Firebase in your own app; PushApp uses it for push delivery. |
 
 ### Your app requirements
@@ -120,13 +120,15 @@ import { PushApp } from 'pushapp-ionic';
 
 await PushApp.initialize({
   appId: 'YOUR_APP_ID',   // e.g. yourtenant_1234567890
-  sandbox: false,         // true for sandbox, false for production
+  sandbox: false,         // false = production (.pushapp.ai), true = sandbox (.pushapp.co.in)
 });
 ```
 
 ### Step B — Register push token
 
 After `initialize()`, request push permission and register the device token.
+
+`register()` is safe on every app open — the SDK skips the network call when the device is already registered with the same token. Profile data is only sent via explicit `saveUserData()` after login.
 
 **Android** — use the FCM token from Capacitor Push Notifications:
 
@@ -251,32 +253,33 @@ Use these only if PushApp campaigns include **inline** or **tooltip** messages.
 
 ### Inline placeholder
 
-1. Add a container in your HTML:
+The SDK **automatically tracks** placeholder position on scroll, resize, and fixed headers. Your app only registers and unregisters.
+
+1. Add a container in your HTML — the element `id` must match `placeholderId`:
 
 ```html
-<div id="promo-banner"></div>
+<div id="promo-banner" class="promo-slot"></div>
 ```
 
-2. Register its position after the view loads:
+2. Register when the view loads; unregister when leaving:
 
 ```typescript
-const el = document.getElementById('promo-banner');
-const rect = el.getBoundingClientRect();
+await PushApp.registerPlaceholder({ placeholderId: 'promo-banner' });
 
+// optional: different DOM id or custom fixed header selector
 await PushApp.registerPlaceholder({
-  placeholderId: 'promo_banner',
-  x: Math.round(rect.left),
-  y: Math.round(rect.top),
-  width: Math.round(rect.width),
-  height: Math.round(rect.height),
+  placeholderId: 'promo_banner',      // campaign id
+  elementId: 'promo-banner',          // HTML id if different
+  clipTopSelector: 'ion-header',      // default; clips below fixed chrome
 });
+
+await PushApp.unregisterPlaceholder({ placeholderId: 'promo-banner' });
 ```
 
-3. Unregister when leaving the page:
-
-```typescript
-await PushApp.unregisterPlaceholder({ placeholderId: 'promo_banner' });
-```
+**Notes:**
+- `placeholderId` must match the PushApp campaign inline slot id.
+- The HTML element id should match `placeholderId` unless you pass `elementId`.
+- Scroll sync, `clipTop` (fixed header overlap), and repositioning are handled inside the SDK — no `updatePlaceholder` calls in app code.
 
 ### Tooltip target
 
@@ -295,6 +298,7 @@ Use this before going live:
 - [ ] `PushApp.login()` called after user authentication
 - [ ] `saveUserData()` called after login (if using profiles/segments)
 - [ ] `setPageName()` called on main screens
+- [ ] Inline placeholders: HTML id matches `placeholderId`; register on enter, unregister on leave
 - [ ] Tested on a real device (push does not work on emulators/simulators for FCM/APNs)
 
 ---
@@ -308,6 +312,9 @@ Use this before going live:
 | `login` rejected | Call `register()` successfully before `login()`. |
 | No push on device | Real device required. Check Firebase config files and notification permissions. |
 | iOS token not received | Verify `AppDelegate` forwards token via `PushApp.shared.handleDeviceToken()`. |
+| Inline never appears | `placeholderId` must match campaign + HTML id; register after view loads; call `setPageName` / `sendEvent`. |
+| Inline overlaps header | Default `clipTopSelector: 'ion-header'` clips below fixed chrome; adjust if your header uses a custom selector. |
+| Inline floats while scrolling | Use latest SDK — scroll repositioning is automatic after `registerPlaceholder()`. |
 
 **Android logs:** Logcat → filter `PushApp`  
 **iOS logs:** Xcode console → filter `PushApp`
@@ -320,12 +327,17 @@ Use this before going live:
 |--------|----------------|
 | `initialize({ appId, sandbox })` | App startup |
 | `register({ fcmToken })` | After initialize, when push token is ready (Android) |
-| `register({ apnsToken, fcmToken? })` | After initialize (iOS) |
+| `register({ apnsToken, fcmToken? })` | After initialize (iOS); safe on every app open |
 | `login({ userId })` | After register, when user is signed in |
-| `saveUserData({ code, additionalInfo, cohorts })` | After login |
+| `saveUserData({ code, additionalInfo, cohorts })` | After login (not automatic on app open) |
 | `setPageName({ pageName })` | On screen change |
 | `sendEvent({ eventName, eventData })` | On user actions |
 | `getDeviceHeaders()` | Anytime (returns device id and headers) |
+| `registerPlaceholder({ placeholderId, elementId?, clipTopSelector? })` | View enter — SDK syncs scroll/position |
+| `unregisterPlaceholder({ placeholderId })` | View leave |
+| `registerTooltipTarget({ targetId, x, y, width, height })` | View enter (tooltip campaigns) |
+| `unregisterTooltipTarget({ targetId })` | View leave |
+| `trackPushNotificationEvent({ token, event, ctaId? })` | Notification open / CTA tap |
 
 ---
 
@@ -337,4 +349,4 @@ https://github.com/mehery-soccom/PushApp-Capacitor/issues
 
 ---
 
-*Document version: 1.0 — PushApp Ionic SDK*
+*Document version: 1.1 — PushApp Ionic SDK*

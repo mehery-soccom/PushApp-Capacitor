@@ -66,9 +66,9 @@ public class PushAppPlugin extends Plugin {
             // Backward-compatible fallback
             fcmToken = call.getString("token");
         }
-        if (fcmToken == null || fcmToken.isEmpty()) {
-            call.reject("fcmToken is required on Android");
-            return;
+        // Android: allow empty token — native layer uses FCM token cached by Firebase service
+        if (fcmToken == null) {
+            fcmToken = "";
         }
         if (!PushApp.Companion.getInstance().isInitialized()) {
             android.util.Log.e("PushAppPlugin", "register() called before initialize()");
@@ -245,6 +245,7 @@ public class PushAppPlugin extends Plugin {
         Double y = call.getDouble("y");
         Double width = call.getDouble("width");
         Double height = call.getDouble("height");
+        Double clipTop = call.getDouble("clipTop");
 
         if (x == null || y == null || width == null || height == null) {
             call.reject("x, y, width, and height are required");
@@ -257,8 +258,8 @@ public class PushAppPlugin extends Plugin {
             return;
         }
 
-        // Create and add placeholder view on UI thread
-        // Coordinates come from JavaScript as pixels, we'll use them directly
+        Integer clipTopPx = clipTop != null ? clipTop.intValue() : null;
+
         activity.runOnUiThread(() -> {
             try {
                 com.mehery.pushapp.PlaceholderViewManager.INSTANCE.createPlaceholderView(
@@ -267,7 +268,8 @@ public class PushAppPlugin extends Plugin {
                     x.intValue(),  // Already in pixels from JS
                     y.intValue(),  // Already in pixels from JS
                     width.intValue(),  // Already in pixels from JS
-                    height.intValue()  // Already in pixels from JS
+                    height.intValue(),  // Already in pixels from JS
+                    clipTopPx
                 );
 
                 JSObject ret = new JSObject();
@@ -276,6 +278,50 @@ public class PushAppPlugin extends Plugin {
             } catch (Exception e) {
                 call.reject("Failed to register placeholder: " + e.getMessage());
             }
+        });
+    }
+
+    @PluginMethod
+    public void updatePlaceholder(PluginCall call) {
+        String placeholderId = call.getString("placeholderId");
+        if (placeholderId == null || placeholderId.isEmpty()) {
+            call.reject("placeholderId is required");
+            return;
+        }
+
+        Double x = call.getDouble("x");
+        Double y = call.getDouble("y");
+        Double width = call.getDouble("width");
+        Double height = call.getDouble("height");
+        Double clipTop = call.getDouble("clipTop");
+
+        if (x == null || y == null || width == null || height == null) {
+            call.reject("x, y, width, and height are required");
+            return;
+        }
+
+        Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("Activity is not available");
+            return;
+        }
+
+        Integer clipTopPx = clipTop != null ? clipTop.intValue() : null;
+
+        activity.runOnUiThread(() -> {
+            com.mehery.pushapp.PlaceholderViewManager.INSTANCE.updatePlaceholderView(
+                activity,
+                placeholderId,
+                x.intValue(),
+                y.intValue(),
+                width.intValue(),
+                height.intValue(),
+                clipTopPx
+            );
+
+            JSObject ret = new JSObject();
+            ret.put("status", "placeholder_updated");
+            call.resolve(ret);
         });
     }
 

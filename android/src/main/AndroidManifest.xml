@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- FCM and notification click handling (merged into app when plugin is used) -->
     <application>
         <service

@@ -4,7 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.util.AttributeSet
 import android.util.Log
+import android.view.View
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.annotation.AttrRes
 import androidx.annotation.StyleRes
 import com.mehery.pushapp.R
@@ -31,19 +33,21 @@ class PlaceholderView @JvmOverloads constructor(
     private var isRegistered = false
 
     init {
-        // Configure WebView settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         settings.allowFileAccess = true
         settings.allowContentAccess = true
-        // Make background transparent so it overlays content properly
+        settings.useWideViewPort = true
+        settings.loadWithOverviewMode = true
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
-        // Make WebView transparent - use hardware acceleration for better performance
-        setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-        // Allow touches to pass through when WebView is empty/transparent
-        setOnTouchListener { _, _ -> false } // Return false to allow touch events to pass through
+        webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                Log.d("PlaceholderView", "Inline HTML loaded for placeholder: $placeholderId")
+            }
+        }
+        setOnTouchListener { _, _ -> false }
 
         // Read placeholderId from XML attributes
         attrs?.let {
@@ -118,6 +122,21 @@ class PlaceholderView @JvmOverloads constructor(
             isRegistered = false
             Log.d("PlaceholderView", "Placeholder unregistered: $placeholderId")
         }
+    }
+
+    fun loadPlaceholderHtml(html: String) {
+        visibility = View.VISIBLE
+        isClickable = true
+        isFocusable = true
+        isFocusableInTouchMode = true
+        setOnTouchListener(null)
+        loadDataWithBaseURL(
+            "https://pushapp.local/",
+            html,
+            "text/html",
+            "UTF-8",
+            null,
+        )
     }
 }
 

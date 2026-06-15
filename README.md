@@ -1,38 +1,35 @@
 # PushApp-Ionic SDK
 
-A lightweight Capacitor plugin to support push notifications, custom in-app messages (popup, banner, PiP, inline, tooltip), event tracking, and session handling for your Ionic/Capacitor apps.
+A Capacitor plugin for push notifications, in-app messaging (popup, banner, roadblock, inline, tooltip), event tracking, and session handling in Ionic/Capacitor apps.
+
+**Full integration walkthrough:** [docs/Integration-Guide.md](docs/Integration-Guide.md)
+
+**Supported platforms:** Android and iOS (Ionic / Angular / Capacitor)
 
 ---
 
-## What Your App Must Add (Quick Checklist)
+## Quick checklist
 
-Your Ionic/Capacitor app should include all of the following:
+Your app should include:
 
-- Firebase config files:
-  - Android: `android/app/google-services.json`
-  - iOS: `ios/App/GoogleService-Info.plist`
-- Push capability on iOS and foreground notification handling in `AppDelegate.swift`
-- SDK initialization at app startup (`PushApp.initialize`)
-- Push token registration from app code (`PushApp.register`)
-- User identity and tracking calls where they match your user journey:
-  - `PushApp.login`
-  - `PushApp.setPageName`
-  - `PushApp.sendEvent`
-  - `PushApp.saveUserData` (after login)
-- Placeholder/tooltip registration only if you use inline/tooltip in-app surfaces
+- Firebase config: `android/app/google-services.json` and/or `ios/App/GoogleService-Info.plist`
+- iOS Push Notifications capability + `AppDelegate` token forwarding (see Integration Guide)
+- SDK calls in order: **`initialize()` → `register()` → `login()`**
+- After login (when needed): `saveUserData()`, `setPageName()`, `sendEvent()`
+- Inline/tooltip registration only if your PushApp campaigns use those surfaces
 
-Call these in order: **`initialize()` → `register()` → `login()`**. Wrong order is logged on the native side and the promise is rejected (the app will not crash).
+`register()` is safe to call on every app open — the native SDK **skips the register API** when the device is already registered with the same token. Customer profiles are **not** updated automatically; call `saveUserData()` explicitly after login.
 
 ---
 
-## 📦 Installation
+## Installation
 
 ```bash
-npm install pushapp-ionic
+npm install pushapp-ionic @capacitor/push-notifications
 npx cap sync
 ```
 
-For iOS, then run:
+iOS:
 
 ```bash
 cd ios/App && pod install
@@ -40,367 +37,240 @@ cd ios/App && pod install
 
 ---
 
-## Step-by-Step Setup (Ionic/Capacitor)
+## Setup
 
-### 1) Add Firebase files
-
-- Android: place `google-services.json` in `android/app/`
-- iOS: add `GoogleService-Info.plist` to your app target
-
-### 2) iOS push setup
-
-Enable **Push Notifications** capability in Xcode and add foreground handling:
-
-```swift
-import UserNotifications
-
-func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-    UNUserNotificationCenter.current().delegate = self
-    return true
-}
-
-func userNotificationCenter(_ center: UNUserNotificationCenter,
-                            willPresent notification: UNNotification,
-                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-    if #available(iOS 14.0, *) {
-        completionHandler([.banner, .sound, .badge])
-    } else {
-        completionHandler([.alert, .sound, .badge])
-    }
-}
-```
-
-### 3) Initialize SDK at app startup
+### 1. Initialize (app startup)
 
 ```typescript
 import { PushApp } from 'pushapp-ionic';
 
 await PushApp.initialize({
-  appId: 'demo_1763369170735', // full channel id (tenant prefix inside this string)
-  sandbox: false
+  appId: 'yourtenant_1234567890', // full channel id from PushApp
+  sandbox: false,                 // false = production (.pushapp.ai)
 });
 ```
 
-### 4) Register push token from app code
+### 2. Register push token
 
-- Android: pass `fcmToken`
-- iOS: pass `apnsToken`, optionally `fcmToken`
-
-```typescript
-// Android
-await PushApp.register({ fcmToken });
-
-// iOS
-await PushApp.register({
-  apnsToken,
-  fcmToken, // optional
-});
-```
-
-### 5) Link user/session + events
-
-```typescript
-await PushApp.login({ userId: 'user_123' });
-
-await PushApp.setPageName({ pageName: 'home' });
-
-await PushApp.sendEvent({
-  eventName: 'button_clicked',
-  eventData: {
-    source: 'welcome_screen',
-    method: 'google'
-  }
-});
-```
-
-### 6) Update customer profile (recommended after login)
-
-```typescript
-const headers = await PushApp.getDeviceHeaders();
-const deviceId = headers['X-Device-ID'] ?? '';
-const code = `user_123_${deviceId}`;
-
-await PushApp.saveUserData({
-  code,
-  additionalInfo: { city: 'Mumbai', plan: 'free' },
-  cohorts: { segment: 'trial' }
-});
-```
-
-### 7) Optional: inline + tooltip in-app placements
-
-#### 🎨 Inline Placeholder Views
-
-Display in-app notifications directly in your app's UI instead of showing them as banners or roadblocks.
-
-**Usage**
-
-1. Create a container element in your HTML:
-
-```html
-<div id="my-placeholder"></div>
-```
-
-2. Register the placeholder in your component:
-
-```typescript
-import { PushApp } from 'pushapp-ionic';
-import { AfterViewInit } from '@angular/core';
-
-export class HomePage implements AfterViewInit {
-  async ngAfterViewInit() {
-    // Wait for DOM to be ready
-    setTimeout(async () => {
-      const element = document.getElementById('my-placeholder');
-      if (element) {
-        const rect = element.getBoundingClientRect();
-
-        await PushApp.registerPlaceholder({
-          placeholderId: 'my_placeholder_id',
-          x: Math.round(rect.left),
-          y: Math.round(rect.top),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height)
-        });
-      }
-    }, 100);
-  }
-}
-```
-
-3. Unregister when leaving the page:
-
-```typescript
-ngOnDestroy() {
-  PushApp.unregisterPlaceholder({
-    placeholderId: 'my_placeholder_id'
-  });
-}
-```
-
-#### 💬 Tooltip Targets
-
-Register UI elements as anchor points for native tooltips/popovers that appear above or below the target element.
-
-**Usage**
-
-1. Create a target element in your HTML:
-
-```html
-<ion-button id="tooltip-target">Click Me</ion-button>
-```
-
-2. Register the tooltip target in your component:
-
-```typescript
-import { PushApp } from 'pushapp-ionic';
-import { AfterViewInit } from '@angular/core';
-
-export class HomePage implements AfterViewInit {
-  async ngAfterViewInit() {
-    setTimeout(async () => {
-      const element = document.getElementById('tooltip-target');
-      if (element) {
-        const rect = element.getBoundingClientRect();
-
-        await PushApp.registerTooltipTarget({
-          targetId: 'my_tooltip_target',
-          x: Math.round(rect.left),
-          y: Math.round(rect.top),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height)
-        });
-      }
-    }, 100);
-  }
-}
-```
-
-3. Unregister when leaving the page:
-
-```typescript
-ngOnDestroy() {
-  PushApp.unregisterTooltipTarget({
-    targetId: 'my_tooltip_target'
-  });
-}
-```
-
----
-
-## 📋 API Reference
-
-### Core Methods
-
-#### `initialize(options)`
-Initialize the SDK. Call first.
-
-**Parameters:**
-- `appId` (string, required unless using legacy `identifier`): **App ID** — your full channel id (e.g. `demo_1763369170735`). The SDK derives the tenant subdomain from the substring before the first `_` (`demo` in this example). The channel id sent to APIs is this full App ID string.
-- `identifier` (string, optional legacy alias): Same value as `appId`; supported for backward compatibility only.
-- `sandbox` (boolean, optional): Set to `true` for sandbox environment, `false` for production
-
-**Returns:** `Promise<{ status: string }>`
-
-#### `register(options)`
-POST the push token to `/pushapp/api/device/register`. Call after `initialize()`.
-
-**Parameters:**
-- `apnsToken` (string, optional): iOS APNs token. This is sent as backend `token`.
-- `fcmToken` (string, optional): Android FCM token (required on Android). On iOS, optional Firebase token sent as backend `fcm_token`.
-- `token` (string, optional legacy alias): Backward-compatible alias for the platform primary token.
-
-**Returns:** `Promise<{ status: string; success: boolean }>`
-
-**Examples:**
+**Android:**
 
 ```typescript
 import { PushNotifications } from '@capacitor/push-notifications';
-import { PushApp } from 'pushapp-ionic';
 
-await PushApp.initialize({ appId: 'demo_1763369170735', sandbox: false });
+await PushNotifications.requestPermissions();
+await PushNotifications.register();
 
-PushNotifications.addListener('registration', async (info) => {
-  await PushApp.register({ fcmToken: info.value });
+PushNotifications.addListener('registration', async (token) => {
+  await PushApp.register({ fcmToken: token.value });
 });
 ```
 
+**iOS:**
+
 ```typescript
-// iOS example: APNs token required, FCM token optional
 await PushApp.register({
   apnsToken: apnsTokenValue,
   fcmToken: fcmTokenValue, // optional
 });
 ```
 
-#### `login(options)`
-Login a user to the SDK. Call after `register()`.
+Forward the APNs token in `AppDelegate` — see [Integration Guide](docs/Integration-Guide.md#4-ios-native-setup).
 
-**Parameters:**
-- `userId` (string, required): Unique user identifier
+### 3. Login (after sign-in)
 
-**Returns:** `Promise<{ status: string }>`
+```typescript
+await PushApp.login({ userId: 'USER_ID' });
+```
 
-#### `sendEvent(options)`
-Send a custom event to track user actions.
+### 4. Profile, pages, and events
 
-**Parameters:**
-- `eventName` (string, required): Name of the event
-- `eventData` (object, required): Event data payload
+```typescript
+const headers = await PushApp.getDeviceHeaders();
+const code = `${userId}_${headers['X-Device-ID'] ?? ''}`;
 
-**Returns:** `Promise<{ status: string }>`
+await PushApp.saveUserData({
+  code,
+  additionalInfo: { city: 'Mumbai', plan: 'premium' },
+  cohorts: { segment: 'active_user' },
+});
 
-#### `setPageName(options)`
-Track the current page/view.
+await PushApp.setPageName({ pageName: 'home' });
 
-**Parameters:**
-- `pageName` (string, required): Name of the current page
-
-**Returns:** `Promise<{ status: string }>`
-
-#### `getDeviceHeaders()`
-Get device information headers.
-
-**Returns:** `Promise<{ [key: string]: string }>`
-
-#### `saveUserData(options)`
-Create or update customer profile data.
-
-**Parameters:**
-- `code` (string, required): Unique customer code. Recommended format: `userId_deviceId`
-- `additionalInfo` (object, required): Profile attributes (example: `dob`, `gender`, `expiry_date`)
-- `cohorts` (object, required): Segmentation/cohort attributes (example: `plan`, `region`)
-
-**Returns:** `Promise<{ status: string; success: boolean }>`
-
-### Placeholder Methods
-
-#### `registerPlaceholder(options)`
-Register a placeholder view for inline content display.
-
-**Parameters:**
-- `placeholderId` (string, required): Unique identifier for the placeholder
-- `x` (number, required): X coordinate in pixels (from `getBoundingClientRect()`)
-- `y` (number, required): Y coordinate in pixels (from `getBoundingClientRect()`)
-- `width` (number, required): Width in pixels
-- `height` (number, required): Height in pixels
-
-**Returns:** `Promise<{ status: string }>`
-
-#### `unregisterPlaceholder(options)`
-Unregister a placeholder view.
-
-**Parameters:**
-- `placeholderId` (string, required): The placeholder ID to unregister
-
-**Returns:** `Promise<{ status: string }>`
-
-### Tooltip Methods
-
-#### `registerTooltipTarget(options)`
-Register a UI element as an anchor for native tooltips.
-
-**Parameters:**
-- `targetId` (string, required): Unique identifier for the tooltip target
-- `x` (number, required): X coordinate in pixels (from `getBoundingClientRect()`)
-- `y` (number, required): Y coordinate in pixels (from `getBoundingClientRect()`)
-- `width` (number, required): Width in pixels
-- `height` (number, required): Height in pixels
-
-**Returns:** `Promise<{ status: string }>`
-
-#### `unregisterTooltipTarget(options)`
-Unregister a tooltip target.
-
-**Parameters:**
-- `targetId` (string, required): The target ID to unregister
-
-**Returns:** `Promise<{ status: string }>`
+await PushApp.sendEvent({
+  eventName: 'page_open',
+  eventData: { page: 'home' },
+});
+```
 
 ---
 
-## 🔧 Platform-Specific Notes
+## Environments
+
+The tenant subdomain comes from your App ID (e.g. `synapsewave` from `synapsewave_1773818143216`).
+
+| `sandbox` | Environment | API base | WebSocket |
+|-----------|-------------|----------|-----------|
+| `false` | **Production** | `https://{tenant}.pushapp.ai` | `wss://{tenant}.pushapp.ai/pushapp` |
+| `true` | **Sandbox** | `https://{tenant}.pushapp.co.in` | `wss://{tenant}.pushapp.co.in/pushapp` |
+
+---
+
+## Inline placeholders
+
+Use when PushApp campaigns deliver **inline** content into your app UI.
+
+The SDK **automatically** tracks placeholder position on scroll, resize, and fixed headers (`ion-header`). Your app only registers and unregisters — no manual coordinates or scroll handlers.
+
+### 1. Add a DOM slot
+
+The HTML element `id` must match `placeholderId` (unless you pass `elementId`):
+
+```html
+<div id="promo-banner" class="promo-slot"></div>
+```
+
+### 2. Register / unregister
+
+```typescript
+// ionViewDidEnter / ngAfterViewInit
+await PushApp.registerPlaceholder({ placeholderId: 'promo-banner' });
+
+// ionViewWillLeave / ngOnDestroy
+await PushApp.unregisterPlaceholder({ placeholderId: 'promo-banner' });
+```
+
+### Optional parameters
+
+```typescript
+await PushApp.registerPlaceholder({
+  placeholderId: 'promo_banner',   // PushApp campaign slot id
+  elementId: 'promo-banner',       // HTML id when different from placeholderId
+  clipTopSelector: 'ion-header',   // clips inline below fixed chrome (default)
+});
+```
+
+### Requirements
+
+| Item | Rule |
+|------|------|
+| `placeholderId` | Must match the PushApp campaign inline slot id |
+| HTML element | Use the same id, or pass `elementId` |
+| Lifecycle | Register when the view enters; unregister when leaving |
+| Scroll sync | Handled by the SDK — do **not** call `updatePlaceholder` from app code |
+
+---
+
+## Tooltip targets
+
+Register anchor elements for native tooltips/popovers:
+
+```html
+<ion-fab-button id="deals-fab">...</ion-fab-button>
+```
+
+```typescript
+const el = document.getElementById('deals-fab');
+const rect = el!.getBoundingClientRect();
+
+await PushApp.registerTooltipTarget({
+  targetId: 'center', // campaign target id
+  x: Math.round(rect.left),
+  y: Math.round(rect.top),
+  width: Math.round(rect.width),
+  height: Math.round(rect.height),
+});
+
+await PushApp.unregisterTooltipTarget({ targetId: 'center' });
+```
+
+---
+
+## API reference
+
+### Core
+
+| Method | When to call |
+|--------|----------------|
+| `initialize({ appId, sandbox? })` | App startup |
+| `register({ fcmToken })` | After initialize — Android |
+| `register({ apnsToken, fcmToken? })` | After initialize — iOS |
+| `login({ userId })` | After register, when user signs in |
+| `saveUserData({ code, additionalInfo, cohorts })` | After login |
+| `setPageName({ pageName })` | On screen change |
+| `sendEvent({ eventName, eventData })` | On user actions |
+| `getDeviceHeaders()` | Anytime |
+| `trackPushNotificationEvent({ token, event, ctaId? })` | Notification open / CTA tap |
+
+### Inline
+
+| Method | When to call |
+|--------|----------------|
+| `registerPlaceholder({ placeholderId, elementId?, clipTopSelector? })` | View enter — SDK syncs position automatically |
+| `unregisterPlaceholder({ placeholderId })` | View leave |
+
+### Tooltip
+
+| Method | When to call |
+|--------|----------------|
+| `registerTooltipTarget({ targetId, x, y, width, height })` | View enter |
+| `unregisterTooltipTarget({ targetId })` | View leave |
+
+---
+
+## Platform notes
 
 ### Android
 
-- **Minimum SDK**: Android API 21 (Lollipop)
-- **Permissions**: The SDK automatically requests notification permissions
-- **ProGuard**: If using ProGuard, add:
-  ```proguard
-  -keep class com.mehery.pushapp.** { *; }
-  ```
+- Minimum API 21
+- ProGuard: `-keep class com.mehery.pushapp.** { *; }`
 
 ### iOS
 
-- **Minimum Version**: iOS 13.0
-- **Capabilities**: Enable Push Notifications in Xcode
-- **Foreground Notifications**: Requires `UNUserNotificationCenterDelegate` setup (see Platform Setup)
+- **Minimum iOS 15.2**
+- Enable Push Notifications in Xcode
+- Forward APNs token via `PushApp.shared.handleDeviceToken()` in `AppDelegate`
 
 ---
 
-## 📄 Example Implementation
+## Example app
 
-See the `example-app/` directory for a complete working example including:
-- Initialization and login
-- Event tracking
-- Placeholder view registration
-- Tooltip target registration
+See `example-app/` for a working WaveMart demo:
 
----
-
-## 🏷️ Version
-
-Current version: `0.0.9`
+- `pushapp-setup.ts` — initialize + register with retry
+- `home.page.ts` — inline placeholder, tooltip target, page events
 
 ---
 
-## 💬 Support
+## Troubleshooting
 
-- **GitHub Issues**: [Report issues or request features](https://github.com/mehery-soccom/PushApp-Capacitor/issues)
-- **Documentation**: Check the example app for implementation details
+| Issue | What to check |
+|-------|----------------|
+| `initialize` fails | App ID format: `tenant_suffix` (e.g. `demo_1763369170735`) |
+| `register` rejected | Call `initialize()` first; token must not be empty |
+| `login` rejected | Call `register()` successfully first |
+| No push on device | Use a real device; verify Firebase config and permissions |
+| Inline never shows | `placeholderId` mismatch; register after DOM ready; call `setPageName` / `sendEvent` |
+| Inline overlaps header | Ensure `clipTopSelector` matches your fixed header (default: `ion-header`) |
+| Inline floats on scroll | Rebuild with latest SDK — scroll sync is automatic |
+
+**Logs:** Android Logcat / iOS Xcode console → filter `PushApp`
 
 ---
 
-## 📝 License
+## Version
+
+Current version: `0.1.0`
+
+---
+
+## Support
+
+- [GitHub Issues](https://github.com/mehery-soccom/PushApp-Capacitor/issues)
+- [Integration Guide](docs/Integration-Guide.md)
+- [Auto-generated API reference](docs/api-reference.md) (from TypeScript definitions)
+
+---
+
+## License
 
 MIT

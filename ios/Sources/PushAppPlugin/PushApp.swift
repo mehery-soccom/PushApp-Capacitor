@@ -60,9 +60,9 @@ public class PushApp: NSObject {
         self.slackPrint(self.channelId)
         
         if sandbox {
-            self.serverUrl = "https://\(self.tenant).pushapp.ai"
-        } else {
             self.serverUrl = "https://\(self.tenant).pushapp.co.in"
+        } else {
+            self.serverUrl = "https://\(self.tenant).pushapp.ai"
         }
         self.slackPrint("Server URL set to: \(self.serverUrl)")
         lifecycleState = .initialized
@@ -134,7 +134,8 @@ public func registerPlaceholder(placeholderId: String,
                                   y: CGFloat,
                                   width: CGFloat,
                                   height: CGFloat,
-                                  webView: WKWebView?) {
+                                  webView: WKWebView?,
+                                  clipTop: CGFloat? = nil) {
     DispatchQueue.main.async {
         guard self.placeholderViews[placeholderId] == nil else {
             self.slackPrint("Placeholder \(placeholderId) already registered.")
@@ -146,16 +147,19 @@ public func registerPlaceholder(placeholderId: String,
             return
         }
 
+        let clipped = self.clipPlaceholderRect(x: x, y: y, width: width, height: height, clipTop: clipTop)
+
         // 1. Create a container view for the native widget
-        let containerView = UIView(frame: CGRect(x: x, y: y, width: width, height: height))
+        let containerView = UIView(frame: CGRect(x: clipped.x, y: clipped.y, width: clipped.width, height: clipped.height))
         containerView.backgroundColor = .clear // Initially clear
         containerView.tag = 999 // Optional: for debugging/easy finding
+        containerView.isHidden = !clipped.visible || clipped.height <= 0
 
         // 2. Add the container view as an overlay to the web view's superview
         // This places it on top of the web content at the specified coordinates
         superview.addSubview(containerView)
         self.placeholderViews[placeholderId] = containerView
-        self.slackPrint("✅ Native container view for \(placeholderId) added at (\(x), \(y)) with size \(width)x\(height)")
+        self.slackPrint("✅ Native container view for \(placeholderId) added at (\(clipped.x), \(clipped.y)) with size \(clipped.width)x\(clipped.height)")
 
         // 3. Immediately send the widget_open event
         // The poll function (called 2s later by sendEvent) will look for this placeholder ID
@@ -171,6 +175,50 @@ public func unregisterPlaceholder(placeholderId: String) {
             self.slackPrint("✅ Native placeholder view \(placeholderId) removed.")
         }
     }
+}
+
+public func updatePlaceholder(
+    placeholderId: String,
+    x: CGFloat,
+    y: CGFloat,
+    width: CGFloat,
+    height: CGFloat,
+    clipTop: CGFloat? = nil
+) {
+    DispatchQueue.main.async {
+        guard let containerView = self.placeholderViews[placeholderId] else { return }
+        let clipped = self.clipPlaceholderRect(x: x, y: y, width: width, height: height, clipTop: clipTop)
+        containerView.frame = CGRect(x: clipped.x, y: clipped.y, width: clipped.width, height: clipped.height)
+        let screenHeight = UIScreen.main.bounds.height
+        let onScreen = clipped.visible &&
+            clipped.height > 0 &&
+            clipped.y + clipped.height > 0 &&
+            clipped.y < screenHeight
+        containerView.isHidden = !onScreen
+    }
+}
+
+private func clipPlaceholderRect(
+    x: CGFloat,
+    y: CGFloat,
+    width: CGFloat,
+    height: CGFloat,
+    clipTop: CGFloat?
+) -> (x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, visible: Bool) {
+    guard let clipTop, clipTop > 0 else {
+        return (x, y, width, height, width > 0 && height > 0)
+    }
+
+    let bottom = y + height
+    if bottom <= clipTop {
+        return (x, y, width, 0, false)
+    }
+
+    if y < clipTop {
+        return (x, clipTop, width, bottom - clipTop, true)
+    }
+
+    return (x, y, width, height, height > 0)
 }
     
     func slackPrint(_ message: String) {
@@ -306,6 +354,22 @@ public func unregisterPlaceholder(placeholderId: String) {
             DispatchQueue.main.async { completion(false) }
             return
         }
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "pushapp_registered") {
+            let savedApnsToken = defaults.string(forKey: "apns_token")
+            let savedFcmToken = defaults.string(forKey: "fcm_token")
+            let incomingFcmToken = fcmToken ?? ""
+            let savedFcm = savedFcmToken ?? ""
+            if savedApnsToken == apnsToken && savedFcm == incomingFcmToken {
+                slackPrint("Device already registered with same token — skipping register API")
+                if lifecycleState == .initialized {
+                    lifecycleState = .registered
+                }
+                DispatchQueue.main.async { completion(true) }
+                return
+            }
+            slackPrint("Push token changed — re-registering device")
+        }
         sendTokenToServer(token: apnsToken, fcmToken: fcmToken, completion: completion)
     }
 
@@ -409,7 +473,12 @@ public func unregisterPlaceholder(placeholderId: String) {
             if let completion = completion {
                 DispatchQueue.main.async {
                     if httpOk {
-                        UserDefaults.standard.set(true, forKey: "pushapp_registered")
+                        let defaults = UserDefaults.standard
+                        defaults.set(true, forKey: "pushapp_registered")
+                        defaults.set(token, forKey: "apns_token")
+                        if let fcmToken = fcmToken, !fcmToken.isEmpty {
+                            defaults.set(fcmToken, forKey: "fcm_token")
+                        }
                         self.lifecycleState = .registered
                         self.slackPrint("SDK registered — next: call login()")
                     }
@@ -1494,9 +1563,9 @@ class WebSocketManager: NSObject {
     private var url: URL {
         let baseUrl: String
         if PushApp.shared.sandbox {
-            baseUrl = "https://\(PushApp.shared.tenant).pushapp.ai"
-        } else {
             baseUrl = "https://\(PushApp.shared.tenant).pushapp.co.in"
+        } else {
+            baseUrl = "https://\(PushApp.shared.tenant).pushapp.ai"
         }
         return URL(string: baseUrl.replacingOccurrences(of: "https", with: "wss") + "/pushapp")!
     }

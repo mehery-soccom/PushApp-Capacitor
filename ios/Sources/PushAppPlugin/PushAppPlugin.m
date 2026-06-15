@@ -13,6 +13,7 @@ CAP_PLUGIN(PushAppPlugin, "PushApp",
            CAP_PLUGIN_METHOD(sendEvent, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(setPageName, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(registerPlaceholder, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(updatePlaceholder, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(unregisterPlaceholder, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(registerTooltipTarget, CAPPluginReturnPromise); // ⭐️ ADD THIS
            CAP_PLUGIN_METHOD(unregisterTooltipTarget, CAPPluginReturnPromise); // ⭐️ ADD THIS

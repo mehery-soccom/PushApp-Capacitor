@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -26,7 +27,6 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
-import android.view.View
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -49,20 +49,34 @@ import kotlin.math.roundToInt
 
 class InAppDisplay(private val activity: Activity) {
 
+    companion object {
+        private const val OVERLAY_Z = 20_000f
+    }
+
     // Queue to show multiple in-app items sequentially
     private var queue: List<Map<String, Any>> = emptyList()
     private var currentIndex = 0
+    private var onQueueComplete: (() -> Unit)? = null
 
-    fun showInApps(items: List<Map<String, Any>>) {
-        if (items.isEmpty()) return
+    fun showInApps(items: List<Map<String, Any>>, onComplete: (() -> Unit)? = null) {
+        if (items.isEmpty()) {
+            onComplete?.invoke()
+            return
+        }
+        onQueueComplete = onComplete
         queue = items
         currentIndex = 0
+        PlaceholderViewManager.setPlaceholdersVisible(false)
         showNext()
     }
 
     private fun showNext() {
-        println("Show next called")
-        if (currentIndex >= queue.size) return
+        if (currentIndex >= queue.size) {
+            PlaceholderViewManager.setPlaceholdersVisible(true)
+            onQueueComplete?.invoke()
+            onQueueComplete = null
+            return
+        }
 
         val data = queue[currentIndex]
         currentIndex++
@@ -158,6 +172,23 @@ class InAppDisplay(private val activity: Activity) {
         }
 
         return "$verticalPart-$horizontalPart"
+    }
+
+    private fun addOverlayView(
+        container: View,
+        layoutParams: FrameLayout.LayoutParams,
+        fullScreen: Boolean = false,
+    ) {
+        val rootView = if (fullScreen) {
+            activity.window.decorView as ViewGroup
+        } else {
+            activity.window.decorView.findViewById(android.R.id.content)
+        }
+        container.z = OVERLAY_Z
+        androidx.core.view.ViewCompat.setElevation(container, OVERLAY_Z)
+        rootView.addView(container, layoutParams)
+        container.bringToFront()
+        PlaceholderViewManager.setPlaceholdersVisible(false)
     }
 
 
@@ -302,9 +333,8 @@ class InAppDisplay(private val activity: Activity) {
                 setBackgroundColor(Color.parseColor("#B3000000"))
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
+                    FrameLayout.LayoutParams.MATCH_PARENT,
                 )
-                setPadding(0, 0, 0, getNavigationBarHeight())
             }
 
             val webView = createContentView(messageId, html) { msg ->
@@ -353,8 +383,14 @@ class InAppDisplay(private val activity: Activity) {
             }
 
             container.addView(closeButton, closeParams)
-            activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
-                .addView(container, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addOverlayView(
+                container,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+                fullScreen = true,
+            )
         }
     }
 
@@ -397,8 +433,10 @@ class InAppDisplay(private val activity: Activity) {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#80000000")) }
             }
             webView.addView(closeButton, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)).apply { gravity = Gravity.END or Gravity.TOP })
-            activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
-                .addView(webView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dpToPx(100)).apply { gravity = Gravity.TOP })
+            addOverlayView(
+                webView,
+                FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dpToPx(100)).apply { gravity = Gravity.TOP },
+            )
         }
     }
 
@@ -558,8 +596,7 @@ private fun showPictureInPicture(
         }
 
         // === Attach to window ===
-        val rootView = activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
-        rootView.addView(
+        addOverlayView(
             pipWrapper,
             FrameLayout.LayoutParams(width, height).apply {
                 this.gravity = gravity
@@ -567,7 +604,7 @@ private fun showPictureInPicture(
                 bottomMargin = if (gravity and Gravity.BOTTOM != 0) dpToPx(20) else 0
                 marginStart = if (gravity and Gravity.START != 0) dpToPx(20) else 0
                 marginEnd = if (gravity and Gravity.END != 0) dpToPx(20) else 0
-            }
+            },
         )
     }
 }
@@ -727,9 +764,7 @@ private fun showPictureInPicture(
             container.y = (activity.resources.displayMetrics.heightPixels - heightPx - dpToPx(80)).toFloat()
 
             // === Add to root ===
-            val rootView = activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
-            rootView.addView(container, FrameLayout.LayoutParams(widthPx, heightPx))
-            container.bringToFront()
+            addOverlayView(container, FrameLayout.LayoutParams(widthPx, heightPx))
         }
     }
 
@@ -737,6 +772,7 @@ private fun showPictureInPicture(
 
     private fun showBottomSheet(messageId: String,filterId : String,html: String, onClose: () -> Unit) {
         activity.runOnUiThread {
+            PlaceholderViewManager.setPlaceholdersVisible(false)
             val dialog = BottomSheetDialog(activity)
             val container = FrameLayout(activity)
 

@@ -2,10 +2,12 @@ import { Component, OnInit } from '@angular/core';
 import { PushApp } from 'pushapp-ionic';
 import { NavController } from '@ionic/angular';
 import { slackWebhookInitOption } from '../../environments/slack-webhook';
+import { initializeAndRegisterPushApp } from '../pushapp-setup';
 
 @Component({
   selector: 'app-login',
   templateUrl: './login.page.html',
+  styleUrls: ['./login.page.scss'],
   standalone: false
 })
 export class LoginPage implements OnInit {
@@ -46,12 +48,13 @@ export class LoginPage implements OnInit {
     console.log("Login page loaded → Initializing SDK...");
 
     try {
-      const res = await PushApp.initialize({
+      await initializeAndRegisterPushApp({
         appId: "demo_1763369170735",
         sandbox: false,
+        ...slackWebhookInitOption(),
       });
 
-      console.log("SDK Initialized:", res);
+      console.log("SDK Initialized and device registered");
     } catch (err) {
       console.error("Initialize error:", err);
     }

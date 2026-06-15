@@ -1,8 +1,17 @@
 // home.page.ts
-import { Component, OnInit, AfterViewInit } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { PushApp } from 'pushapp-ionic';
 import { NavController } from '@ionic/angular';
 import { Capacitor } from '@capacitor/core';
+
+interface ProductCard {
+  name: string;
+  brand: string;
+  price: string;
+  rating: string;
+  emoji: string;
+  gradient: string;
+}
 
 @Component({
   selector: 'app-home',
@@ -10,12 +19,30 @@ import { Capacitor } from '@capacitor/core';
   styleUrls: ['home.page.scss'],
   standalone: false,
 })
-export class HomePage implements OnInit, AfterViewInit {
-  username: string = 'User';
+export class HomePage implements OnInit {
+  username = 'User';
+
+  get displayName(): string {
+    const name = this.username.trim();
+    if (!name) return 'Shopper';
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  stats = [
+    { icon: 'heart-outline', value: '12', label: 'Saved' },
+    { icon: 'pricetag-outline', value: '3', label: 'Deals' },
+    { icon: 'cube-outline', value: '2', label: 'Orders' },
+  ];
+
+  products: ProductCard[] = [
+    { name: 'Aero Runner Sneakers', brand: 'Nimbus', price: '$129', rating: '4.8', emoji: '👟', gradient: 'linear-gradient(145deg, #e0e7ff, #c7d2fe)' },
+    { name: 'Linen Weekend Tote', brand: 'Harbor', price: '$68', rating: '4.6', emoji: '👜', gradient: 'linear-gradient(145deg, #fce7f3, #fbcfe8)' },
+    { name: 'Ceramic Pour-Over Kit', brand: 'Brew & Co', price: '$54', rating: '4.9', emoji: '☕', gradient: 'linear-gradient(145deg, #d1fae5, #a7f3d0)' },
+    { name: 'Noise-Cancel Headphones', brand: 'Pulse', price: '$249', rating: '4.7', emoji: '🎧', gradient: 'linear-gradient(145deg, #fef3c7, #fde68a)' },
+  ];
 
   // 4. Define IDs as constants
-  private readonly HTML_BANNER_ID = 'pushapp-placeholder';
-  private readonly API_BANNER_ID = 'login_banner';
+  private readonly PLACEHOLDER_ID = 'wave-placeholder';
   
   // ⭐️ NEW TOOLTIP IDs
   private readonly HTML_TOOLTIP_ID = 'tooltip-target';
@@ -24,58 +51,46 @@ export class HomePage implements OnInit, AfterViewInit {
   constructor(private navCtrl: NavController) {}
 
   ngOnInit() {
-    // ... existing login/username logic ...
+    const savedUsername = localStorage.getItem('username');
+    if (savedUsername) {
+      this.username = savedUsername;
+    }
 
     // Send page open event (This is where polling often triggers)
     PushApp.sendEvent({
       eventName: 'page_open',
-      eventData: { page: 'login' }
+      eventData: { page: 'watchlist' }
     });
-    
-    // We register both the banner and the tooltip target after the view is ready
   }
 
-  ngAfterViewInit() {
+  ionViewDidEnter() {
+    PushApp.setPageName({ pageName: 'watchlist' });
+
     if (Capacitor.isNativePlatform()) {
-      setTimeout(() => {
-        // Register the full inline banner view
-        this.registerBannerView();
-        
-        // ⭐️ Register the tooltip target element
-        this.registerTooltipTarget(); 
-      }, 50);
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          this.registerBannerView();
+          this.registerTooltipTarget();
+        }, 250);
+      });
     }
   }
 
-  // RENAMED for clarity
-  async registerBannerView() {
-    const placeholderEl = document.getElementById(this.HTML_BANNER_ID);
-    if (!placeholderEl) {
-        console.error(`Placeholder element #${this.HTML_BANNER_ID} not found.`);
-        return;
+  ionViewWillLeave() {
+    if (Capacitor.isNativePlatform()) {
+      PushApp.unregisterPlaceholder({ placeholderId: this.PLACEHOLDER_ID }).catch(() => undefined);
     }
-    
-    // Wait for layout to be complete
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    const rect = placeholderEl.getBoundingClientRect();
-    console.log(`Banner element rect:`, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-    
+  }
+
+  async registerBannerView() {
     try {
-      await PushApp.registerPlaceholder({
-        placeholderId: this.API_BANNER_ID,
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height)
-      });
-      console.log(`Banner view registered: ${this.API_BANNER_ID} at (${rect.left}, ${rect.top})`);
+      await PushApp.registerPlaceholder({ placeholderId: this.PLACEHOLDER_ID });
+      console.log(`Banner placeholder registered: ${this.PLACEHOLDER_ID}`);
     } catch (error) {
       console.error('Failed to register banner view:', error);
     }
   }
 
-  // ⭐️ NEW METHOD FOR TOOLTIP TARGET
   async registerTooltipTarget() {
     const targetEl = document.getElementById(this.HTML_TOOLTIP_ID);
 
@@ -132,10 +147,13 @@ export class HomePage implements OnInit, AfterViewInit {
       eventName: 'circle_button_clicked',
       eventData: {
         username: this.username,
-        page: 'dashboard'
+        page: 'watchlist'
       }
     });
   }
 
-  // ... (logout method) ...
+  logout() {
+    localStorage.removeItem('username');
+    this.navCtrl.navigateRoot('/login');
+  }
 }

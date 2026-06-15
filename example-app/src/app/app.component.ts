@@ -1,7 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { NavController } from '@ionic/angular';
-import { PushApp } from 'pushapp-ionic';
 import { slackWebhookInitOption } from '../environments/slack-webhook';
+import { initializeAndRegisterPushApp } from './pushapp-setup';
 
 @Component({
   selector: 'app-root',
@@ -23,7 +23,7 @@ export class AppComponent implements OnInit {
       
       // Initialize SDK
       try {
-        await PushApp.initialize({
+        await initializeAndRegisterPushApp({
           appId: "demo_1763369170735",
           sandbox: false,
           ...slackWebhookInitOption(),

@@ -1,18 +1,9 @@
 import { WebPlugin } from '@capacitor/core';
-import type { PushAppPlugin, UIOptions } from './definitions'; // ⭐️ Ensure UIOptions is imported if used in definitions
+import type { PushAppPlugin, PlaceholderRegisterOptions, UIOptions } from './definitions'; // ⭐️ Ensure UIOptions is imported if used in definitions
 
 // Use a combined type for placeholder/target registration parameters
 interface TargetRegistrationOptions extends UIOptions {
     targetId: string;
-}
-
-// Define combined placeholder registration parameters (if you didn't use UIOptions in definitions)
-interface PlaceholderRegistrationOptions {
-    placeholderId: string;
-    x?: number; 
-    y?: number; 
-    width?: number; 
-    height?: number;
 }
 
 
@@ -54,8 +45,13 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     return { status: 'web_not_supported' };
   }
 
-  async registerPlaceholder(options: PlaceholderRegistrationOptions): Promise<{ status: string }> {
+  async registerPlaceholder(options: PlaceholderRegisterOptions): Promise<{ status: string }> {
     console.log('Web implementation - registerPlaceholder', options);
+    return { status: 'web_not_supported' };
+  }
+
+  async updatePlaceholder(options: PlaceholderRegisterOptions & UIOptions): Promise<{ status: string }> {
+    console.log('Web implementation - updatePlaceholder', options);
     return { status: 'web_not_supported' };
   }
 
