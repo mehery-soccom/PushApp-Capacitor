@@ -7,7 +7,7 @@ import okhttp3.Response
 import okio.Buffer
 import java.io.IOException
 
-/** Logs PushApp HTTP calls to Slack (rate-limited via [SlackApiLogger]). */
+/** Logs PushApp HTTP calls to Logcat (when debugMode is on) and optionally to Slack. */
 class ApiSlackLoggingInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
@@ -26,6 +26,13 @@ class ApiSlackLoggingInterceptor : Interceptor {
                 response.headers(name).joinToString(", ")
             }
             val responseBody = response.peekBody(64 * 1024).string()
+            PushAppLogger.logApiCall(
+                method = request.method,
+                url = request.url.toString(),
+                requestBody = requestBody,
+                statusCode = response.code,
+                responseBody = responseBody,
+            )
             SlackApiLogger.logApiCall(
                 platform = "Android",
                 method = request.method,
@@ -39,6 +46,14 @@ class ApiSlackLoggingInterceptor : Interceptor {
             )
             response
         } catch (e: IOException) {
+            PushAppLogger.logApiCall(
+                method = request.method,
+                url = request.url.toString(),
+                requestBody = requestBody,
+                statusCode = null,
+                responseBody = null,
+                error = e.message,
+            )
             SlackApiLogger.logApiCall(
                 platform = "Android",
                 method = request.method,

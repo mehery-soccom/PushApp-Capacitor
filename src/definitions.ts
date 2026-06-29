@@ -23,11 +23,14 @@ export interface PushAppPlugin {
    * Initialize the SDK. Pass your **channel id** as **App ID** (`appId`).
    * The tenant subdomain is derived from the substring before the first `_` (e.g. `demo` from `demo_1763369170735`).
    * Use `identifier` only for backward compatibility; it is the same value as `appId`.
+   *
+   * `debugMode` enables verbose native logs in debug builds only (tokens/PII are redacted).
+   * `slackWebhookUrl` opts in to posting API request/response logs to your Slack webhook (development only).
    */
   initialize(
     options:
-      | { appId: string; sandbox?: boolean; slackWebhookUrl?: string }
-      | { identifier: string; sandbox?: boolean; slackWebhookUrl?: string },
+      | { appId: string; sandbox?: boolean; debugMode?: boolean; slackWebhookUrl?: string }
+      | { identifier: string; sandbox?: boolean; debugMode?: boolean; slackWebhookUrl?: string },
   ): Promise<{ status: string }>;
   /**
    * POST push token to `/pushapp/api/device/register`.
@@ -36,14 +39,24 @@ export interface PushAppPlugin {
    * - iOS: provide `apnsToken` (sent as backend `token`) and optional `fcmToken` (sent as backend `fcm_token`).
    * Legacy fallback: `token` is accepted as alias for the platform primary token.
    */
-  register(options: { apnsToken?: string; fcmToken?: string; token?: string }): Promise<{ status: string; success: boolean }>;
+  register(options: {
+    apnsToken?: string;
+    fcmToken?: string;
+    token?: string;
+  }): Promise<{ status: string; success: boolean }>;
   login(options: { userId: string }): Promise<{ status: string }>;
+  /** Delink the device from the current user. Clears local session; calls server delink when a user was logged in. */
+  logout(): Promise<{ status: string }>;
   /** Create or update customer profile (PUT). Call after login with code = userId_deviceId. */
-  saveUserData(options: { code: string; additionalInfo: Record<string, unknown>; cohorts: Record<string, unknown> }): Promise<{ status: string; success: boolean }>;
+  saveUserData(options: {
+    code: string;
+    additionalInfo: Record<string, unknown>;
+    cohorts: Record<string, unknown>;
+  }): Promise<{ status: string; success: boolean }>;
   getDeviceHeaders(): Promise<{ [key: string]: string }>;
   sendEvent(options: { eventName: string; eventData: { [key: string]: any } }): Promise<{ status: string }>;
   setPageName(options: { pageName: string }): Promise<{ status: string }>;
-  
+
   // Inline Placeholder Methods
   /**
    * Register an inline placeholder. On native platforms the SDK tracks DOM position

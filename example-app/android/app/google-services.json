@@ -84,7 +84,26 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:22930153229:android:48dc3bd25315f699e4da44",
+        "mobilesdk_app_id": "1:22930153229:android:5287c0135f78bc7ce4da44",
+        "android_client_info": {
+          "package_name": "com.zpl_mobileapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjeVU3mUXHjJgNObF3T6QctN15oR_Zo2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22930153229:android:c4c0c867710df9ece4da44",
         "android_client_info": {
           "package_name": "meheryeventsender.example"
         }

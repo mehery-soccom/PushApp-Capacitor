@@ -152,7 +152,12 @@ export class HomePage implements OnInit {
     });
   }
 
-  logout() {
+  async logout() {
+    try {
+      await PushApp.logout();
+    } catch (err) {
+      console.warn('PushApp.logout failed (local session may still be cleared):', err);
+    }
     localStorage.removeItem('username');
     this.navCtrl.navigateRoot('/login');
   }

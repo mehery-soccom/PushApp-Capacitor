@@ -5,27 +5,37 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.app.NotificationManager
-import android.util.Log
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 class MySdkFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
-        Log.d("MySdk", "Notification received: ${remoteMessage.data}")
+        PushAppLogger.debug(
+            "MySdk",
+            "FCM message received (dataKeys=${remoteMessage.data.keys}, hasNotification=${remoteMessage.notification != null})",
+        )
 
         val data = PushNotificationDisplay.normalizePushData(
             remoteMessage.data,
             remoteMessage.notification,
         )
 
-        PushApp.getInstance().lastNotificationData = data
-        PushApp.getInstance().handleNotification(data)
+        val pushApp = PushApp.getInstance()
+        pushApp.lastNotificationData = data
+
+        if (!pushApp.isInitialized()) {
+            PushAppLogger.warn("MySdk", "SDK not initialized — posting system notification directly")
+            PushNotificationDisplay.displayFromData(applicationContext, data)
+            return
+        }
+
+        pushApp.handleNotification(data)
     }
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.d("MySdk", "New token received: $token")
+        PushAppLogger.logPushToken("MySdk", "FCM token (onNewToken)", token)
         PushApp.getInstance().handleDeviceToken(token)
     }
 }
@@ -42,12 +52,11 @@ class NotificationClickReceiver : BroadcastReceiver() {
             bundle.keySet().associateWith { bundle[it].toString() }
         } ?: emptyMap()
 
-        Log.d("PushApp", "📩 Notification clicked, ID = $notificationId")
-        Log.d("PushApp", "🧾 userInfo: $data")
+        PushAppLogger.debug("PushApp", "Notification clicked, ID = $notificationId")
 
         val clickToken = data["click_token"]
         if (clickToken.isNullOrEmpty()) {
-            Log.e("PushApp", "❌ Missing click_token in payload")
+            PushAppLogger.error("PushApp", "Missing click_token in payload")
             if (notificationId != -1) {
                 (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notificationId)
             }
@@ -65,7 +74,7 @@ class NotificationClickReceiver : BroadcastReceiver() {
             event = event,
             ctaId = if (ctaId.isNullOrEmpty()) null else ctaId
         )
-        Log.d("PushApp", "✅ Push track ($event) sent.")
+        PushAppLogger.debug("PushApp", "Push track ($event) sent.")
 
         if (!url.isNullOrEmpty()) {
             try {
@@ -74,7 +83,7 @@ class NotificationClickReceiver : BroadcastReceiver() {
                 }
                 context.startActivity(browserIntent)
             } catch (e: Exception) {
-                Log.e("PushApp", "❌ Failed to open URL: $url", e)
+                PushAppLogger.error("PushApp", "Failed to open notification URL", e)
             }
         }
 

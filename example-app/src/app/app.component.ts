@@ -25,7 +25,8 @@ export class AppComponent implements OnInit {
       try {
         await initializeAndRegisterPushApp({
           appId: "demo_1763369170735",
-          sandbox: false,
+          sandbox: true,
+          debugMode: true,
           ...slackWebhookInitOption(),
         });
         

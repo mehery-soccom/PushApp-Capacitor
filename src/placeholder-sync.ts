@@ -60,11 +60,7 @@ async function waitForLayout(elementId: string, maxAttempts = 20): Promise<HTMLE
   return document.getElementById(elementId);
 }
 
-async function syncEntry(
-  entry: PlaceholderSyncEntry,
-  native: PushAppPlugin,
-  register: boolean,
-): Promise<void> {
+async function syncEntry(entry: PlaceholderSyncEntry, native: PushAppPlugin, register: boolean): Promise<void> {
   const rect = getElementRect(entry.elementId);
   if (!rect) {
     return;
@@ -143,14 +139,12 @@ function detachGlobalListeners(): void {
   onViewportResizeHandler = null;
 }
 
-function attachResizeObserver(
-  entry: PlaceholderSyncEntry,
-  element: HTMLElement,
-  native: PushAppPlugin,
-): void {
-  const ResizeObserverCtor = (window as Window & {
-    ResizeObserver?: new (callback: () => void) => { observe(target: Element): void; disconnect(): void };
-  }).ResizeObserver;
+function attachResizeObserver(entry: PlaceholderSyncEntry, element: HTMLElement, native: PushAppPlugin): void {
+  const ResizeObserverCtor = (
+    window as Window & {
+      ResizeObserver?: new (callback: () => void) => { observe(target: Element): void; disconnect(): void };
+    }
+  ).ResizeObserver;
 
   if (!ResizeObserverCtor) {
     return;
@@ -202,10 +196,7 @@ export async function startPlaceholderSync(
   return { status: 'placeholder_registration_initiated' };
 }
 
-export async function stopPlaceholderSync(
-  native: PushAppPlugin,
-  placeholderId: string,
-): Promise<{ status: string }> {
+export async function stopPlaceholderSync(native: PushAppPlugin, placeholderId: string): Promise<{ status: string }> {
   const entry = syncEntries.get(placeholderId);
   if (entry) {
     teardownEntry(entry);

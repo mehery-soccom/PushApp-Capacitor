@@ -31,14 +31,24 @@ public class PushApp: NSObject {
     }
 
     private var lifecycleState: SdkLifecycle = .notInitialized
-    
-    let slackWebhookURL = URL(string: "https://hooks.slack.com/services/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")!
-    
+    private var lastAppOpenSentAt: TimeInterval = 0
+    private var didRegisterForegroundObserver = false
 
-    private override init() {}
+    private static let appOpenDebounceSeconds: TimeInterval = 3
+    private static let guestIdKey = "pushapp_guest_id"
 
-    public func initialize(appId: String, sandbox: Bool = false, slackWebhookUrl: String? = nil) -> Bool {
+    private override init() {
+        super.init()
+    }
+
+    public func initialize(
+        appId: String,
+        sandbox: Bool = false,
+        slackWebhookUrl: String? = nil,
+        debugMode: Bool = false
+    ) -> Bool {
         self.sandbox = sandbox
+        PushAppLogger.configure(debug: debugMode)
         SlackApiLogger.configure(webhookUrl: slackWebhookUrl)
         guard let context = self.topViewController() else {
             slackPrint("Initialize failed: unable to find top view controller")
@@ -70,19 +80,70 @@ public class PushApp: NSObject {
 
         self.inAppDisplay = InAppDisplay(context: context)
 
-        if let savedUserId = UserDefaults.standard.string(forKey: "pushapp_user_id") {
-             self.slackPrint("SavedUserId: \(savedUserId)")
+        restoreGuestIdFromStorage()
+
+        if let savedUserId = UserDefaults.standard.string(forKey: "pushapp_user_id"), !savedUserId.isEmpty {
+            self.slackPrint("Restored userId from storage")
             self.userId = savedUserId
-            if UserDefaults.standard.bool(forKey: "pushapp_registered") {
-                lifecycleState = .loggedIn
-                slackPrint("Restored session: register + login already completed")
-            }
-            self.sendEvent(eventName: "app_open", eventData: ["compare": channelId])
-            self.connectSocket()
         }
-        
+
+        if UserDefaults.standard.bool(forKey: "pushapp_registered") {
+            lifecycleState = (userId != nil) ? .loggedIn : .registered
+            slackPrint("Restored session: device already registered")
+            if userId != nil || guestId != nil {
+                connectSocket()
+            }
+            notifyAppOpen()
+        }
+
+        registerForegroundObserverIfNeeded()
         registerNotificationCategories()
         return true
+    }
+
+    public func onAppForegrounded() {
+        notifyAppOpen()
+    }
+
+    private func notifyAppOpen() {
+        guard lifecycleState == .registered || lifecycleState == .loggedIn else { return }
+        guard userId != nil || guestId != nil else { return }
+
+        let now = Date().timeIntervalSince1970
+        guard now - lastAppOpenSentAt >= Self.appOpenDebounceSeconds else { return }
+        lastAppOpenSentAt = now
+
+        slackPrint("Sending app_open event")
+        sendEvent(eventName: "app_open", eventData: ["compare": channelId])
+    }
+
+    private func restoreGuestIdFromStorage() {
+        guestId = UserDefaults.standard.string(forKey: Self.guestIdKey)
+    }
+
+    private func persistGuestId(_ guest: String?) {
+        guestId = guest?.isEmpty == false ? guest : nil
+        let defaults = UserDefaults.standard
+        if let guestId {
+            defaults.set(guestId, forKey: Self.guestIdKey)
+        } else {
+            defaults.removeObject(forKey: Self.guestIdKey)
+        }
+    }
+
+    private func registerForegroundObserverIfNeeded() {
+        guard !didRegisterForegroundObserver else { return }
+        didRegisterForegroundObserver = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleAppDidBecomeActive() {
+        onAppForegrounded()
     }
 
     private func logSequenceError(_ required: String) {
@@ -222,32 +283,7 @@ private func clipPlaceholderRect(
 }
     
     func slackPrint(_ message: String) {
-        // Print to console
-        print(message)
-        
-        // Send to Slack
-//        var request = URLRequest(url: slackWebhookURL)
-//        request.httpMethod = "POST"
-//        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-//        
-//        let payload = ["text": message]
-//        
-//        do {
-//            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-//        } catch {
-//            print("⚠️ Failed to encode Slack message: \(error)")
-//            return
-//        }
-//        
-//        let task = SlackApiLogger.dataTask(with: request) { _, response, error in
-//            if let error = error {
-//                print("⚠️ Slack send error: \(error)")
-//            } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-//                print("⚠️ Slack returned status: \(httpResponse.statusCode)")
-//            }
-//        }
-//        
-//        task.resume()
+        PushAppLogger.debug(message)
     }
 
     func getDeviceHeaders() -> [String: String] {
@@ -324,7 +360,8 @@ private func clipPlaceholderRect(
 
     public func handleDeviceToken(_ deviceToken: Data) {
         let tokenString = deviceToken.map { String(format: "%02x", $0) }.joined()
-        self.slackPrint("APNs Token: \(tokenString)")
+        PushAppLogger.logPushToken("APNs token", token: tokenString)
+        self.slackPrint("APNs token received")
 
         let defaults = UserDefaults.standard
         defaults.set(tokenString, forKey: "apns_token")
@@ -354,6 +391,10 @@ private func clipPlaceholderRect(
             DispatchQueue.main.async { completion(false) }
             return
         }
+        PushAppLogger.logPushToken("APNs token (register)", token: apnsToken)
+        if let fcmToken, !fcmToken.isEmpty {
+            PushAppLogger.logPushToken("FCM token (register)", token: fcmToken)
+        }
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "pushapp_registered") {
             let savedApnsToken = defaults.string(forKey: "apns_token")
@@ -365,6 +406,10 @@ private func clipPlaceholderRect(
                 if lifecycleState == .initialized {
                     lifecycleState = .registered
                 }
+                if guestId == nil {
+                    restoreGuestIdFromStorage()
+                }
+                notifyAppOpen()
                 DispatchQueue.main.async { completion(true) }
                 return
             }
@@ -461,7 +506,7 @@ private func clipPlaceholderRect(
                    let guest = device["user_id"] as? String {
                     let defaults = UserDefaults.standard
                     defaults.set(token, forKey: "apns_token")
-                    self.guestId = guest
+                    persistGuestId(guest)
                     self.slackPrint("🎉 Guest ID set: \(guest)")
                 } else {
                     self.slackPrint("⚠️ JSON structure did not match expected format")
@@ -481,6 +526,7 @@ private func clipPlaceholderRect(
                         }
                         self.lifecycleState = .registered
                         self.slackPrint("SDK registered — next: call login()")
+                        self.notifyAppOpen()
                     }
                     completion(httpOk)
                 }
@@ -580,6 +626,75 @@ private func clipPlaceholderRect(
             }
         }
         return true
+    }
+
+    public func logout(completion: @escaping (Bool) -> Void) {
+        if lifecycleState == .notInitialized || serverUrl.isEmpty {
+            logSequenceError("logout() requires initialize() first")
+            completion(false)
+            return
+        }
+
+        let delinkUserId = userId
+        clearLocalUserSession()
+
+        guard let delinkUserId = delinkUserId, !delinkUserId.isEmpty else {
+            completion(true)
+            return
+        }
+
+        guard let deviceId = getPersistentDeviceId() as String? else {
+            completion(false)
+            return
+        }
+
+        let urlString = "\(serverUrl)/pushapp/api/device/delink"
+        guard let url = URL(string: urlString) else {
+            completion(false)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let deviceHeaders = getDeviceHeaders()
+        for (key, value) in deviceHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let payload: [String: Any] = [
+            "user_id": delinkUserId,
+            "device_id": deviceId,
+            "channel_id": channelId,
+        ]
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload) else {
+            completion(false)
+            return
+        }
+        request.httpBody = jsonData
+
+        SlackApiLogger.dataTask(with: request) { _, response, error in
+            if let error = error {
+                self.slackPrint("Logout delink request failed: \(error.localizedDescription)")
+                completion(false)
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse {
+                completion(httpResponse.statusCode >= 200 && httpResponse.statusCode < 300)
+            } else {
+                completion(false)
+            }
+        }
+    }
+
+    private func clearLocalUserSession() {
+        userId = nil
+        socketManager?.disconnect()
+        socketManager = nil
+        UserDefaults.standard.removeObject(forKey: "pushapp_user_id")
+        lifecycleState = UserDefaults.standard.bool(forKey: "pushapp_registered") ? .registered : .initialized
     }
 
     public func ping() {
@@ -1558,7 +1673,6 @@ class WebSocketManager: NSObject {
     private let userId: String
     private let onMessage: ([String: Any]) -> Void
     private var webSocketTask: URLSessionWebSocketTask?
-    let slackWebhookURL = URL(string: "https://hooks.slack.com/services/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")!
     @available(iOS 15.2, *)
     private var url: URL {
         let baseUrl: String
@@ -1583,34 +1697,14 @@ class WebSocketManager: NSObject {
         listen()
         sendAuth()
     }
+
+    func disconnect() {
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+    }
     
     func slackPrint(_ message: String) {
-        // Print to console
-        print(message)
-        
-        // Send to Slack
-//        var request = URLRequest(url: slackWebhookURL)
-//        request.httpMethod = "POST"
-//        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-//        
-//        let payload = ["text": message]
-//        
-//        do {
-//            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-//        } catch {
-//            print("⚠️ Failed to encode Slack message: \(error)")
-//            return
-//        }
-//        
-//        let task = SlackApiLogger.dataTask(with: request) { _, response, error in
-//            if let error = error {
-//                print("⚠️ Slack send error: \(error)")
-//            } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-//                print("⚠️ Slack returned status: \(httpResponse.statusCode)")
-//            }
-//        }
-//        
-//        task.resume()
+        PushAppLogger.debug(message)
     }
 
     private func sendAuth() {
@@ -1695,7 +1789,6 @@ class InAppDisplay {
     private var isShowing: Bool = false
     private var bannerWindow: UIWindow?
     private var floaterWindow: UIWindow?
-    let slackWebhookURL = URL(string: "https://hooks.slack.com/services/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")!
 
     init(context: UIViewController) {
         self.context = context
@@ -1710,32 +1803,7 @@ class InAppDisplay {
     }
     
     func slackPrint(_ message: String) {
-        // Print to console
-        print(message)
-        
-        // Send to Slack
-//        var request = URLRequest(url: slackWebhookURL)
-//        request.httpMethod = "POST"
-//        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-//        
-//        let payload = ["text": message]
-//        
-//        do {
-//            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-//        } catch {
-//            print("⚠️ Failed to encode Slack message: \(error)")
-//            return
-//        }
-//        
-//        let task = SlackApiLogger.dataTask(with: request) { _, response, error in
-//            if let error = error {
-//                print("⚠️ Slack send error: \(error)")
-//            } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-//                print("⚠️ Slack returned status: \(httpResponse.statusCode)")
-//            }
-//        }
-//        
-//        task.resume()
+        PushAppLogger.debug(message)
     }
 
     private func showNextIfNeeded() {
@@ -2940,16 +3008,14 @@ extension PushApp {
 
 // MARK: - SlackApiLogger
 
-/// Posts PushApp API request/response details to Slack with rate limiting.
+/// Opt-in API telemetry to a Slack Incoming Webhook (integration debugging only).
+/// Enabled only when a valid webhook URL is passed to PushApp.initialize().
 enum SlackApiLogger {
     private enum PostResult {
         case success
         case retry
         case permanentFailure
     }
-
-    private static let fallbackWebhookURL =
-        "https://hooks.slack.com/services/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"
 
     private static let minInterval: TimeInterval = 2.5
     private static let maxPerMinute = 12
@@ -2971,19 +3037,16 @@ enum SlackApiLogger {
     static func configure(webhookUrl: String?) {
         disabled = false
         let trimmed = webhookUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        webhookURLString = resolveWebhookUrl(trimmed)
-            ?? resolveWebhookUrl(fallbackWebhookURL)
-            ?? ""
+        webhookURLString = resolveWebhookUrl(trimmed) ?? ""
         if !webhookURLString.isEmpty {
-            print("SlackApiLogger: API logging enabled")
+            PushAppLogger.debug("Slack API logging enabled (opt-in)")
             postConfiguredPing()
         } else if !trimmed.isEmpty {
-            print(
-                "SlackApiLogger: invalid slackWebhookUrl \"\(trimmed)\". " +
-                "Use a real Incoming Webhook URL from Slack → Apps → Incoming Webhooks."
+            PushAppLogger.error(
+                "Invalid slackWebhookUrl. Use a real Incoming Webhook URL from Slack → Apps → Incoming Webhooks."
             )
         } else {
-            print("SlackApiLogger: API logging disabled (no valid webhook URL)")
+            PushAppLogger.debug("Slack API logging disabled (no webhook URL provided)")
         }
     }
 
@@ -3024,6 +3087,15 @@ enum SlackApiLogger {
             }
             let respBody = data.flatMap { String(data: $0, encoding: .utf8) }
 
+            PushAppLogger.logApiCall(
+                method: method,
+                url: url,
+                requestBody: reqBody,
+                statusCode: statusCode,
+                responseBody: respBody,
+                error: error?.localizedDescription
+            )
+
             logApiCall(
                 platform: "iOS",
                 method: method,
@@ -3051,7 +3123,7 @@ enum SlackApiLogger {
         error: String?
     ) {
         guard !webhookURLString.isEmpty, !disabled else { return }
-        print("SlackApiLogger: queue API log: \(method) \(url)")
+        PushAppLogger.debug("Queue Slack API log: \(method) \(url)")
         let message = buildMessage(
             platform: platform,
             method: method,
@@ -3110,9 +3182,9 @@ enum SlackApiLogger {
                     item.retries += 1
                     if item.retries <= maxSlackPostRetries {
                         pendingMessages.insert(item, at: 0)
-                        print("SlackApiLogger: post failed; retry \(item.retries)/\(maxSlackPostRetries)")
+                        PushAppLogger.debug("Slack post failed; retry \(item.retries)/\(maxSlackPostRetries)")
                     } else {
-                        print("SlackApiLogger: dropped log after \(maxSlackPostRetries) retries")
+                        PushAppLogger.debug("Dropped log after \(maxSlackPostRetries) retries")
                     }
                     isDraining = false
                     if !pendingMessages.isEmpty {
@@ -3122,7 +3194,7 @@ enum SlackApiLogger {
                     pendingMessages.removeAll()
                     disabled = true
                     isDraining = false
-                    print("SlackApiLogger: webhook rejected; API logging disabled for this session")
+                    PushAppLogger.error("Slack webhook rejected; API logging disabled for this session")
                 }
             }
         }
@@ -3144,7 +3216,7 @@ enum SlackApiLogger {
 
     private static func postToSlack(text: String, completion: @escaping (PostResult) -> Void) {
         guard let url = URL(string: webhookURLString) else {
-            print("SlackApiLogger: invalid webhook URL")
+            PushAppLogger.error("Invalid Slack webhook URL")
             completion(.permanentFailure)
             return
         }
@@ -3160,22 +3232,20 @@ enum SlackApiLogger {
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("SlackApiLogger: post failed — \(error.localizedDescription)")
+                PushAppLogger.error("Slack post failed — \(error.localizedDescription)")
                 completion(.retry)
                 return
             }
             if let http = response as? HTTPURLResponse {
                 if http.statusCode == 200 {
-                    print("SlackApiLogger: API log posted")
+                    PushAppLogger.debug("Slack API log posted")
                     completion(.success)
                     return
                 }
-                let bodyText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                print("SlackApiLogger: webhook HTTP \(http.statusCode) — \(bodyText)")
+                PushAppLogger.error("Slack webhook HTTP \(http.statusCode)")
                 if (400...499).contains(http.statusCode) && http.statusCode != 429 {
-                    print(
-                        "SlackApiLogger: webhook invalid or revoked (e.g. no_team). " +
-                        "Create a new Incoming Webhook and pass slackWebhookUrl in PushApp.initialize()."
+                    PushAppLogger.error(
+                        "Slack webhook invalid or revoked. Pass a valid slackWebhookUrl in PushApp.initialize()."
                     )
                     completion(.permanentFailure)
                     return
@@ -3201,20 +3271,35 @@ enum SlackApiLogger {
         var parts: [String] = []
         parts.append("[\(platform) API] \(method) \(url)")
         parts.append("\nRequest headers:\n\(truncate(formatHeaders(requestHeaders), max: maxFieldLength))")
-        parts.append("\nRequest body:\n\(truncate(requestBody?.isEmpty == false ? requestBody! : "(none)", max: maxFieldLength))")
+        parts.append(
+            "\nRequest body:\n\(truncate(sanitize(requestBody?.isEmpty == false ? requestBody! : "(none)"), max: maxFieldLength))"
+        )
         if let error = error {
-            parts.append("\nError:\n\(truncate(error, max: maxFieldLength))")
+            parts.append("\nError:\n\(truncate(sanitize(error), max: maxFieldLength))")
         } else {
             parts.append("\nResponse: \(statusCode.map(String.init) ?? "?")")
-            parts.append("\nResponse headers:\n\(truncate(formatHeaders(responseHeaders), max: maxFieldLength))")
-            parts.append("\nResponse body:\n\(truncate(responseBody?.isEmpty == false ? responseBody! : "(none)", max: maxFieldLength))")
+            parts.append(
+                "\nResponse headers:\n\(truncate(formatHeaders(responseHeaders), max: maxFieldLength))"
+            )
+            parts.append(
+                "\nResponse body:\n\(truncate(sanitize(responseBody?.isEmpty == false ? responseBody! : "(none)"), max: maxFieldLength))"
+            )
         }
         return parts.joined(separator: "\n")
     }
 
     private static func formatHeaders(_ headers: [String: String]) -> String {
         if headers.isEmpty { return "(none)" }
-        return headers.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\n")
+        return headers.map { key, value in
+            let redacted = key.lowercased() == "authorization" || key.lowercased() == "x-device-id"
+                ? "***REDACTED***"
+                : value
+            return "\(key): \(redacted)"
+        }.sorted().joined(separator: "\n")
+    }
+
+    private static func sanitize(_ message: String) -> String {
+        PushAppLogger.sanitize(message)
     }
 
     private static func truncate(_ value: String, max: Int) -> String {

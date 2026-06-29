@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PushappIonic",
-    platforms: [.iOS(.v14)],
+    platforms: [.iOS("15.2")],
     products: [
         .library(
             name: "PushappIonic",

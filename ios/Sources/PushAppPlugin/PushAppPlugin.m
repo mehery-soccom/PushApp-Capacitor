@@ -7,6 +7,7 @@ CAP_PLUGIN(PushAppPlugin, "PushApp",
            CAP_PLUGIN_METHOD(initialize, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(register, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(login, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(logout, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(ping, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(saveUserData, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(getDeviceHeaders, CAPPluginReturnPromise);

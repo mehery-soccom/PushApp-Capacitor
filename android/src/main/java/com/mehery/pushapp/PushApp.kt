@@ -2,7 +2,11 @@ package com.mehery.pushapp
 
 import android.app.Activity
 import android.content.Context
-import android.util.Log
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.Manifest
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import okhttp3.*
@@ -15,6 +19,7 @@ import java.lang.ref.WeakReference
 import java.util.concurrent.TimeUnit
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import androidx.core.text.HtmlCompat
@@ -44,6 +49,7 @@ class PushApp private constructor() {
 
     private var webSocketManager: WebSocketManager? = null
     private var currentActivityRef: WeakReference<Activity>? = null
+    private var lastAppOpenSentAt = 0L
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -52,6 +58,9 @@ class PushApp private constructor() {
         .build()
 
     companion object {
+        private const val APP_OPEN_DEBOUNCE_MS = 3000L
+        private const val PREF_GUEST_ID = "pushapp_guest_id"
+
         @Volatile
         private var instance: PushApp? = null
 
@@ -66,10 +75,12 @@ class PushApp private constructor() {
         appId: String,
         sandbox: Boolean = false,
         slackWebhookUrl: String? = null,
+        debugMode: Boolean = false,
     ): Boolean {
+        PushAppLogger.configure(debugMode)
         SlackApiLogger.configure(slackWebhookUrl)
         if (initialized) {
-            Log.d("PushApp", "Already initialized; updated Slack webhook config")
+            PushAppLogger.debug("PushApp", "Already initialized; updated logging config")
             return lifecycleState != SdkLifecycle.NOT_INITIALIZED
         }
 
@@ -78,7 +89,7 @@ class PushApp private constructor() {
         // App ID is the full channel id (e.g. demo_1763369170735). Tenant is the prefix before the first '_'.
         val u = appId.indexOf('_')
         if (u <= 0 || u >= appId.length - 1) {
-            Log.e(
+            PushAppLogger.error(
                 "PushApp",
                 "Initialize failed: invalid app id (expected tenant_prefix before first '_', e.g. demo_1763369170735, got: $appId)",
             )
@@ -95,11 +106,11 @@ class PushApp private constructor() {
         // Set serverUrl BEFORE other operations that might need it
         serverUrl = if (sandbox) "https://$tenant.pushapp.co.in" else "https://$tenant.pushapp.ai"
         lifecycleState = SdkLifecycle.INITIALIZED
-        Log.d("PushApp", "SDK initialized — next: call register() with push token, then login()")
-        Log.d("PushApp", "Server URL: $serverUrl")
-        Log.d("PushApp", "Channel ID: $channelId")
-        Log.d("PushApp", "Tenant: $tenant")
-        Log.d("PushApp", "Sandbox: $sandbox")
+        PushAppLogger.debug("PushApp", "SDK initialized — next: call register() with push token, then login()")
+        PushAppLogger.debug("PushApp", "Server URL: $serverUrl")
+        PushAppLogger.debug("PushApp", "Channel ID: $channelId")
+        PushAppLogger.debug("PushApp", "Tenant: $tenant")
+        PushAppLogger.debug("PushApp", "Sandbox: $sandbox")
 
         // Initialize Firebase before other operations
         // Note: Firebase might already be initialized by the app's Application class
@@ -107,41 +118,100 @@ class PushApp private constructor() {
             // Check if Firebase is already initialized
             try {
                 FirebaseApp.getInstance()
-                Log.d("PushApp", "Firebase already initialized")
+                PushAppLogger.debug("PushApp", "Firebase already initialized")
             } catch (e: IllegalStateException) {
                 // Not initialized, try to initialize
                 // This might fail if google-services.json is missing or Firebase isn't configured
                 try {
                     FirebaseApp.initializeApp(this.context)
-                    Log.d("PushApp", "Firebase initialized successfully")
+                    PushAppLogger.debug("PushApp", "Firebase initialized successfully")
                 } catch (initException: Exception) {
-                    Log.w("PushApp", "Firebase initialization failed (may not be configured): ${initException.message}")
+                    PushAppLogger.warn("PushApp", "Firebase initialization failed (may not be configured): ${initException.message}")
                     // Continue without Firebase - push notifications won't work but other features can
                 }
             }
         } catch (e: Exception) {
-            Log.w("PushApp", "Firebase check failed: ${e.message}")
+            PushAppLogger.warn("PushApp", "Firebase check failed: ${e.message}")
             // Continue without Firebase - push notifications won't work but other features can
         }
 
         val prefs = context.getSharedPreferences("PushAppPrefs", Context.MODE_PRIVATE)
+        val devicePrefs = context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE)
+        guestId = devicePrefs.getString(PREF_GUEST_ID, null)?.takeIf { it.isNotEmpty() }
+
         val savedUserId = prefs.getString("pushapp_user_id", null)
         if (!savedUserId.isNullOrEmpty()) {
             this.userId = savedUserId
-            Log.d("PushApp", "Restored userId from storage: $savedUserId")
-            if (hasRegistered()) {
-                lifecycleState = SdkLifecycle.LOGGED_IN
-                Log.d("PushApp", "Restored session: register + login already completed")
-            }
-            flushBufferedEvents()
-            connectSocket()
+            PushAppLogger.debug("PushApp", "Restored userId from storage")
         }
+
+        if (hasRegistered()) {
+            lifecycleState = if (userId != null) SdkLifecycle.LOGGED_IN else SdkLifecycle.REGISTERED
+            PushAppLogger.debug("PushApp", "Restored session: device already registered")
+            flushBufferedEvents()
+            if (userId != null || guestId != null) {
+                connectSocket()
+            }
+            notifyAppOpen()
+        }
+
+        devicePrefs.getString("fcm_token", null)?.takeIf { it.isNotEmpty() }?.let { cached ->
+            PushAppLogger.logPushToken("PushApp", "FCM token (stored)", cached)
+        }
+        registerDeviceToken()
 
         return true
     }
 
+    fun onAppForegrounded() {
+        notifyAppOpen()
+    }
+
+    /**
+     * Android 13+ requires runtime POST_NOTIFICATIONS or system notifications are silently dropped.
+     */
+    fun ensureNotificationPermission(activity: Activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            PushAppLogger.debug("PushApp", "POST_NOTIFICATIONS already granted")
+            return
+        }
+        PushAppLogger.debug("PushApp", "Requesting POST_NOTIFICATIONS permission")
+        ActivityCompat.requestPermissions(
+            activity,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            1001,
+        )
+    }
+
+    private fun notifyAppOpen() {
+        if (!initialized || serverUrl.isEmpty()) return
+        if (lifecycleState.ordinal < SdkLifecycle.REGISTERED.ordinal) return
+        if (userId == null && guestId == null) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastAppOpenSentAt < APP_OPEN_DEBOUNCE_MS) return
+        lastAppOpenSentAt = now
+
+        PushAppLogger.debug("PushApp", "Sending app_open event")
+        sendEvent("app_open", mapOf("compare" to channelId))
+    }
+
+    private fun persistGuestId(guest: String?) {
+        guestId = guest?.takeIf { it.isNotEmpty() }
+        val editor = context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE).edit()
+        if (guestId != null) {
+            editor.putString(PREF_GUEST_ID, guestId)
+        } else {
+            editor.remove(PREF_GUEST_ID)
+        }
+        editor.apply()
+    }
+
     private fun logSequenceError(required: String, actual: SdkLifecycle) {
-        Log.e(
+        PushAppLogger.error(
             "PushApp",
             "SDK call order violation: $required (current state: $actual). " +
                 "Required order: initialize() → register() → login()",
@@ -176,7 +246,7 @@ class PushApp private constructor() {
             val timestamp = System.currentTimeMillis()
             persistentId = "${rawDeviceId}_$timestamp"
             prefs.edit().putString("persistent_device_id", persistentId).apply()
-            Log.d("PushApp", "Generated persistent device ID: $persistentId")
+            PushAppLogger.debug("PushApp", "Generated persistent device ID: $persistentId")
         }
 
         return persistentId
@@ -215,46 +285,45 @@ class PushApp private constructor() {
         try {
             FirebaseApp.getInstance()
         } catch (e: IllegalStateException) {
-            Log.w("PushApp", "Cannot register device token: Firebase not initialized. Push notifications will not be available.")
+            PushAppLogger.warn("PushApp", "Cannot register device token: Firebase not initialized. Push notifications will not be available.")
             return
         }
 
         FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
             if (!task.isSuccessful) {
-                Log.w("PushApp", "❌ Fetching FCM token failed", task.exception)
+                PushAppLogger.warn("PushApp", "❌ Fetching FCM token failed", task.exception)
                 return@addOnCompleteListener
             }
 
             val newToken = task.result
-            Log.d("PushApp", "🔑 FCM Token: $newToken")
+            PushAppLogger.logPushToken("PushApp", "FCM token", newToken.orEmpty())
 
             if (newToken.isNullOrEmpty()) {
-                Log.w("PushApp", "⚠️ Empty FCM token received.")
+                PushAppLogger.warn("PushApp", "⚠️ Empty FCM token received.")
                 return@addOnCompleteListener
             }
 
             val prefs = context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE)
             val lastToken = prefs.getString("fcm_token", null)
             if (lastToken != null) {
-                Log.d("PushApp",lastToken)
+                PushAppLogger.debug("PushApp", "Cached FCM token present")
             }else{
-                Log.d("PushApp","NO LAST TOKEN")
+                PushAppLogger.debug("PushApp", "No cached FCM token")
             }
 
             if (lastToken == newToken) {
                 if (hasRegistered()) {
-                    Log.d("PushApp", "Token unchanged and device already registered — skipping register API")
+                    PushAppLogger.debug("PushApp", "Token unchanged and device already registered — skipping register API")
                     return@addOnCompleteListener
                 }
-                Log.d("PushApp", "Token unchanged — calling sendTokenToServer()")
-                Log.d("PushApp", "Last Token — $lastToken")
+                PushAppLogger.debug("PushApp", "Token unchanged — calling sendTokenToServer()")
                 sendTokenToServer("android", newToken)
             } else if(lastToken == null){
-                Log.d("PushApp", "✅ New Token - $newToken")
+                PushAppLogger.debug("PushApp", "New FCM token — registering device")
                 sendTokenToServer("android", newToken)
             } else {
                 // 🔄 Token changed — update it on server
-                Log.d("PushApp", "🔄 Token changed — calling updateDeviceToken()")
+                PushAppLogger.debug("PushApp", "🔄 Token changed — calling updateDeviceToken()")
                 updateDeviceToken(newToken)
 
                 // Save new token
@@ -269,7 +338,8 @@ class PushApp private constructor() {
 
 
     fun handleDeviceToken(token: String) {
-        Log.d("PushApp", "Handling device token: $token")
+        PushAppLogger.logPushToken("PushApp", "FCM token (onNewToken)", token)
+        PushAppLogger.debug("PushApp", "Handling device token update")
         sendTokenToServer("android", token)
     }
 
@@ -303,7 +373,7 @@ class PushApp private constructor() {
             headers["X-App-Version"] = packageInfo.versionName ?: ""
             headers["X-SDK-Version"] = packageInfo.longVersionCode.toString()
         } catch (e: Exception) {
-            Log.e("PushApp", "Failed to get package info: ${e.message}")
+            PushAppLogger.error("PushApp", "Failed to get package info: ${e.message}")
         }
 
         return headers
@@ -313,11 +383,11 @@ class PushApp private constructor() {
 
     private fun sendTokenToServer(platform: String, token: String) {
         if (serverUrl.isEmpty()) {
-            Log.e("PushApp", "Cannot send token: PushApp not initialized")
+            PushAppLogger.error("PushApp", "Cannot send token: PushApp not initialized")
             return
         }
         if (lifecycleState.ordinal < SdkLifecycle.REGISTERED.ordinal) {
-            Log.w(
+            PushAppLogger.warn(
                 "PushApp",
                 "Token received but register() was not called yet — caching locally. " +
                     "Call register() after initialize() to register with the server.",
@@ -325,10 +395,11 @@ class PushApp private constructor() {
             context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE).edit()
                 .putString("fcm_token", token)
                 .apply()
+            PushAppLogger.logPushToken("PushApp", "FCM token (cached)", token)
             return
         }
         if (hasRegistered()) {
-            Log.d("PushApp", "Device already registered. Skipping registration.")
+            PushAppLogger.debug("PushApp", "Device already registered. Skipping registration.")
             return
         }
         postDeviceRegister(platform, token, callback = null)
@@ -350,24 +421,29 @@ class PushApp private constructor() {
             prefs.getString("fcm_token", null).orEmpty()
         }
         if (tokenToSend.isBlank()) {
-            Log.e("PushApp", "register() failed: push token is empty (wait for FCM token or pass fcmToken from JS)")
+            PushAppLogger.error("PushApp", "register() failed: push token is empty (wait for FCM token or pass fcmToken from JS)")
             Handler(Looper.getMainLooper()).post { callback(false) }
             return
         }
         if (token.isBlank()) {
-            Log.d("PushApp", "Using cached FCM token for register()")
+            PushAppLogger.debug("PushApp", "Using cached FCM token for register()")
         }
+        PushAppLogger.logPushToken("PushApp", "FCM token (register)", tokenToSend)
         if (hasRegistered()) {
             val savedToken = prefs.getString("fcm_token", null)
             if (savedToken == tokenToSend) {
-                Log.d("PushApp", "Device already registered with same token — skipping register API")
+                PushAppLogger.debug("PushApp", "Device already registered with same token — skipping register API")
                 if (lifecycleState == SdkLifecycle.INITIALIZED) {
                     lifecycleState = SdkLifecycle.REGISTERED
                 }
+                if (guestId == null) {
+                    guestId = prefs.getString(PREF_GUEST_ID, null)?.takeIf { it.isNotEmpty() }
+                }
+                notifyAppOpen()
                 Handler(Looper.getMainLooper()).post { callback(true) }
                 return
             }
-            Log.d("PushApp", "FCM token changed — re-registering device")
+            PushAppLogger.debug("PushApp", "FCM token changed — re-registering device")
         }
         postDeviceRegister("android", tokenToSend, callback = callback)
     }
@@ -387,16 +463,16 @@ class PushApp private constructor() {
 
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "SendToken API URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "SendToken API URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Failed to send token to server: ${e.message}")
+                PushAppLogger.error("PushApp", "Failed to send token to server: ${e.message}")
                 callback?.let { cb ->
                     Handler(Looper.getMainLooper()).post { cb(false) }
                 }
@@ -406,11 +482,11 @@ class PushApp private constructor() {
                 val responseBody = response.body?.string()
                 val success = response.isSuccessful
                 if (success) {
-                    Log.d("PushApp", "SendToken API success, code=${response.code}")
-                    Log.d("PushApp", "Response Body: $responseBody")
+                    PushAppLogger.debug("PushApp", "SendToken API success, code=${response.code}")
+                    PushAppLogger.debug("PushApp", "Response Body: $responseBody")
                     setRegistered()
                     lifecycleState = SdkLifecycle.REGISTERED
-                    Log.d("PushApp", "SDK registered — next: call login()")
+                    PushAppLogger.debug("PushApp", "SDK registered — next: call login()")
                     context.getSharedPreferences("pushapp_prefs", Context.MODE_PRIVATE).edit()
                         .putString("fcm_token", token)
                         .apply()
@@ -418,17 +494,17 @@ class PushApp private constructor() {
                     try {
                         val responseJson = JSONObject(responseBody ?: "{}")
                         val device = responseJson.optJSONObject("device")
-                        guestId = device?.optString("user_id")
-                        Log.d("PushApp", "Guest ID: $guestId")
+                        persistGuestId(device?.optString("user_id"))
+                        PushAppLogger.debug("PushApp", "Guest ID: $guestId")
                     } catch (e: Exception) {
-                        Log.e("PushApp", "Error parsing sendToken response: ${e.message}")
+                        PushAppLogger.error("PushApp", "Error parsing sendToken response: ${e.message}")
                     }
 
                     flushBufferedEvents()
-                    sendEvent("app_open", emptyMap())
+                    notifyAppOpen()
                 } else {
-                    Log.e("PushApp", "SendToken API failed: HTTP ${response.code}")
-                    Log.e("PushApp", "Response Body: $responseBody")
+                    PushAppLogger.error("PushApp", "SendToken API failed: HTTP ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $responseBody")
                 }
                 response.close()
                 callback?.let { cb ->
@@ -450,7 +526,7 @@ class PushApp private constructor() {
             return false
         }
         if (userId.isBlank()) {
-            Log.e("PushApp", "login() failed: userId is empty")
+            PushAppLogger.error("PushApp", "login() failed: userId is empty")
             return false
         }
 
@@ -469,16 +545,16 @@ class PushApp private constructor() {
 
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "Login API URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "Login API URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Login API failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Login API failed: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -487,19 +563,73 @@ class PushApp private constructor() {
                     // Persist userId in SharedPreferences
                     val prefs = context.getSharedPreferences("PushAppPrefs", Context.MODE_PRIVATE)
                     prefs.edit().putString("pushapp_user_id", userId).apply()
-                    Log.d("PushApp", "Login API success, code=${response.code}")
-                    Log.d("PushApp", "Response Body: $responseBody")
+                    PushAppLogger.debug("PushApp", "Login API success, code=${response.code}")
+                    PushAppLogger.debug("PushApp", "Response Body: $responseBody")
 
                     flushBufferedEvents()
                     connectSocket()
                 } else {
-                    Log.e("PushApp", "Login API failed: HTTP ${response.code}")
-                    Log.e("PushApp", "Response Body: $responseBody")
+                    PushAppLogger.error("PushApp", "Login API failed: HTTP ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $responseBody")
                 }
                 response.close()
             }
         })
         return true
+    }
+
+    fun logout(callback: (Boolean) -> Unit) {
+        if (lifecycleState == SdkLifecycle.NOT_INITIALIZED || serverUrl.isEmpty()) {
+            logSequenceError("logout() requires initialize() first", lifecycleState)
+            Handler(Looper.getMainLooper()).post { callback(false) }
+            return
+        }
+
+        val delinkUserId = userId
+        clearLocalUserSession()
+
+        if (delinkUserId.isNullOrBlank()) {
+            Handler(Looper.getMainLooper()).post { callback(true) }
+            return
+        }
+
+        val url = "$serverUrl/pushapp/api/device/delink"
+        val json = JSONObject().apply {
+            put("user_id", delinkUserId)
+            put("device_id", getPersistentDeviceId())
+            put("channel_id", channelId)
+        }
+
+        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        val requestBuilder = Request.Builder().url(url).post(body)
+        getDeviceHeaders().forEach { (k, v) -> requestBuilder.addHeader(k, v) }
+
+        httpClient.newCall(requestBuilder.build()).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                PushAppLogger.error("PushApp", "Logout delink API failed: ${e.message}")
+                Handler(Looper.getMainLooper()).post { callback(false) }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val success = response.isSuccessful
+                if (!success) {
+                    PushAppLogger.error("PushApp", "Logout delink API failed: HTTP ${response.code}")
+                }
+                response.close()
+                Handler(Looper.getMainLooper()).post { callback(success) }
+            }
+        })
+    }
+
+    private fun clearLocalUserSession() {
+        userId = null
+        webSocketManager?.disconnect()
+        webSocketManager = null
+        lifecycleState = if (hasRegistered()) SdkLifecycle.REGISTERED else SdkLifecycle.INITIALIZED
+        context.getSharedPreferences("PushAppPrefs", Context.MODE_PRIVATE)
+            .edit()
+            .remove("pushapp_user_id")
+            .apply()
     }
 
     /**
@@ -513,12 +643,12 @@ class PushApp private constructor() {
         callback: (Boolean) -> Unit
     ) {
         if (serverUrl.isEmpty()) {
-            Log.e("PushApp", "PushApp not initialized. Call initialize() first.")
+            PushAppLogger.error("PushApp", "PushApp not initialized. Call initialize() first.")
             Handler(Looper.getMainLooper()).post { callback(false) }
             return
         }
         if (code.isEmpty()) {
-            Log.e("PushApp", "code is required for customer profile")
+            PushAppLogger.error("PushApp", "code is required for customer profile")
             Handler(Looper.getMainLooper()).post { callback(false) }
             return
         }
@@ -540,20 +670,20 @@ class PushApp private constructor() {
             requestBuilder.addHeader(k, v)
         }
 
-        Log.d("PushApp", "Customer profile PUT: $url")
-        Log.d("PushApp", "Request Body: ${bodyJson.toString(2)}")
+        PushAppLogger.debug("PushApp", "Customer profile PUT: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${bodyJson.toString(2)}")
 
         httpClient.newCall(requestBuilder.build()).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Customer profile request failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Customer profile request failed: ${e.message}")
                 Handler(Looper.getMainLooper()).post { callback(false) }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val success = response.isSuccessful
-                Log.d("PushApp", "Customer profile response: ${response.code}")
+                PushAppLogger.debug("PushApp", "Customer profile response: ${response.code}")
                 if (!success) {
-                    Log.e("PushApp", "Response body: ${response.body?.string()}")
+                    PushAppLogger.error("PushApp", "Response body: ${response.body?.string()}")
                 }
                 response.close()
                 Handler(Looper.getMainLooper()).post { callback(success) }
@@ -565,7 +695,7 @@ class PushApp private constructor() {
 
     fun sendEvent(eventName: String, eventData: Map<String, Any>) {
         if (serverUrl.isEmpty()) {
-            Log.e("PushApp", "PushApp not initialized. Call initialize() first.")
+            PushAppLogger.error("PushApp", "PushApp not initialized. Call initialize() first.")
             bufferEvent(eventName, eventData)
             return
         }
@@ -590,31 +720,31 @@ class PushApp private constructor() {
 
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "Event Triggered: $eventName")
-        Log.d("PushApp", "Event Data: $eventData")
-        Log.d("PushApp", "Event URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "Event Triggered: $eventName")
+        PushAppLogger.debug("PushApp", "Event Data: $eventData")
+        PushAppLogger.debug("PushApp", "Event URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Event send failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Event send failed: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val bodyStr = response.body?.string()
                 if (response.isSuccessful) {
-                    Log.d("PushApp", "Event sent successfully")
-                    Log.d("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.debug("PushApp", "Event sent successfully")
+                    PushAppLogger.debug("PushApp", "Response Body: $bodyStr")
                     Handler(Looper.getMainLooper()).postDelayed({
                         userId?.let { pollForInApp(it) }
                     }, 2000)
                 } else {
-                    Log.e("PushApp", "Failed to send event: ${response.code}")
-                    Log.e("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.error("PushApp", "Failed to send event: ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $bodyStr")
                 }
                 response.close()
             }
@@ -622,7 +752,7 @@ class PushApp private constructor() {
     }
 
     fun updateDeviceToken(token: String) {
-        Log.d("PushApp", "🔄 updateDeviceToken() called")
+        PushAppLogger.debug("PushApp", "🔄 updateDeviceToken() called")
 
         val url = "$serverUrl/pushapp/api/update/token"
         val deviceId = getPersistentDeviceId()
@@ -641,32 +771,32 @@ class PushApp private constructor() {
             // Add headers (optional — use your own method if you have one)
             getDeviceHeaders().forEach { (k, v) ->
                 requestBuilder.addHeader(k, v)
-                Log.d("PushApp", "Header: $k = $v")
+                PushAppLogger.debug("PushApp", "Header: $k = $v")
             }
 
-            Log.d("PushApp", "URL: $url")
-            Log.d("PushApp", "Request Body: ${json.toString(2)}")
+            PushAppLogger.debug("PushApp", "URL: $url")
+            PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
             val request = requestBuilder.build()
             httpClient.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    Log.e("PushApp", "🔥 Error updating device token: ${e.message}")
+                    PushAppLogger.error("PushApp", "🔥 Error updating device token: ${e.message}")
                 }
 
                 override fun onResponse(call: Call, response: Response) {
                     val bodyStr = response.body?.string()
                     if (response.isSuccessful) {
-                        Log.d("PushApp", "✅ Token updated successfully on server.")
-                        Log.d("PushApp", "Response Body: $bodyStr")
+                        PushAppLogger.debug("PushApp", "✅ Token updated successfully on server.")
+                        PushAppLogger.debug("PushApp", "Response Body: $bodyStr")
                     } else {
-                        Log.e("PushApp", "❌ Failed to update token: ${response.code}")
-                        Log.e("PushApp", "Response Body: $bodyStr")
+                        PushAppLogger.error("PushApp", "❌ Failed to update token: ${response.code}")
+                        PushAppLogger.error("PushApp", "Response Body: $bodyStr")
                     }
                     response.close()
                 }
             })
         } catch (e: Exception) {
-            Log.e("PushApp", "🔥 Exception in updateDeviceToken: ${e.message}")
+            PushAppLogger.error("PushApp", "🔥 Exception in updateDeviceToken: ${e.message}")
         }
     }
 
@@ -684,27 +814,27 @@ class PushApp private constructor() {
 
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "Ack Triggered")
-        Log.d("PushApp", "Ack URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "Ack Triggered")
+        PushAppLogger.debug("PushApp", "Ack URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Ack send failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Ack send failed: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val bodyStr = response.body?.string()
                 if (response.isSuccessful) {
-                    Log.d("PushApp", "Ack sent successfully")
-                    Log.d("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.debug("PushApp", "Ack sent successfully")
+                    PushAppLogger.debug("PushApp", "Response Body: $bodyStr")
                 } else {
-                    Log.e("PushApp", "Failed to send ack: ${response.code}")
-                    Log.e("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.error("PushApp", "Failed to send ack: ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $bodyStr")
                 }
                 response.close()
             }
@@ -736,27 +866,27 @@ class PushApp private constructor() {
 
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "Track Triggered: $event")
-        Log.d("PushApp", "Track URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "Track Triggered: $event")
+        PushAppLogger.debug("PushApp", "Track URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Track send failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Track send failed: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val bodyStr = response.body?.string()
                 if (response.isSuccessful) {
-                    Log.d("PushApp", "Track sent successfully")
-                    Log.d("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.debug("PushApp", "Track sent successfully")
+                    PushAppLogger.debug("PushApp", "Response Body: $bodyStr")
                 } else {
-                    Log.e("PushApp", "Failed to send track: ${response.code}")
-                    Log.e("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.error("PushApp", "Failed to send track: ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $bodyStr")
                 }
                 response.close()
             }
@@ -788,27 +918,27 @@ class PushApp private constructor() {
         // Add device headers (same as trackInAppEvent)
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "Notification Track Triggered: $event")
-        Log.d("PushApp", "Track URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "Notification Track Triggered: $event")
+        PushAppLogger.debug("PushApp", "Track URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Notification Track failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Notification Track failed: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val bodyStr = response.body?.string()
                 if (response.isSuccessful) {
-                    Log.d("PushApp", "Notification Track sent successfully")
-                    Log.d("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.debug("PushApp", "Notification Track sent successfully")
+                    PushAppLogger.debug("PushApp", "Response Body: $bodyStr")
                 } else {
-                    Log.e("PushApp", "Failed to send Notification Track: ${response.code}")
-                    Log.e("PushApp", "Response Body: $bodyStr")
+                    PushAppLogger.error("PushApp", "Failed to send Notification Track: ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $bodyStr")
                 }
                 response.close()
             }
@@ -831,29 +961,29 @@ class PushApp private constructor() {
 
         getDeviceHeaders().forEach { (k, v) ->
             requestBuilder.addHeader(k, v)
-            Log.d("PushApp", "Header: $k = $v")
+            PushAppLogger.debug("PushApp", "Header: $k = $v")
         }
 
-        Log.d("PushApp", "Polling In-App URL: $url")
-        Log.d("PushApp", "Request Body: ${json.toString(2)}")
+        PushAppLogger.debug("PushApp", "Polling In-App URL: $url")
+        PushAppLogger.debug("PushApp", "Request Body: ${json.toString(2)}")
 
         val request = requestBuilder.build()
         httpClient.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("PushApp", "Poll in-app failed: ${e.message}")
+                PushAppLogger.error("PushApp", "Poll in-app failed: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val responseBody = response.body?.string()
                 if (response.isSuccessful) {
-                    Log.d("PushApp", "Poll in-app successful, code=${response.code}")
-                    Log.d("PushApp", "Response Body: $responseBody")
+                    PushAppLogger.debug("PushApp", "Poll in-app successful, code=${response.code}")
+                    PushAppLogger.debug("PushApp", "Response Body: $responseBody")
 
                     if (!responseBody.isNullOrEmpty()) {
                         try {
                             val jsonResponse = JSONObject(responseBody)
                             val success = jsonResponse.optBoolean("success", false)
-                            Log.d("PushApp", "JSON Body: $jsonResponse")
+                            PushAppLogger.debug("PushApp", "JSON Body: $jsonResponse")
                             if (success) {
                                 val results = jsonResponse.optJSONArray("results")
                                 if (results != null && results.length() > 0) {
@@ -898,20 +1028,20 @@ class PushApp private constructor() {
                                             val line1FontColor = style?.optString("line1_font_color").takeIf { it?.isNotBlank() == true }
                                             val line2FontColor = style?.optString("line2_font_color").takeIf { it?.isNotBlank() == true }
 
-                                            Log.d("PushApp", "Processing tooltip for target=$target, title=$title")
+                                            PushAppLogger.debug("PushApp", "Processing tooltip for target=$target, title=$title")
 
                                             // Send ACK for the message
                                             ackInApp(messageId)
 
                                             // Check if there's a registered tooltip target for this target ID
                                             val tooltipTarget = PlaceholderViewManager.getTooltipTarget(target)
-                                            Log.d("PushApp", "Looking for tooltip target: $target")
-                                            Log.d("PushApp", "Available tooltip targets: ${PlaceholderViewManager.getAllTooltipTargetIds()}")
+                                            PushAppLogger.debug("PushApp", "Looking for tooltip target: $target")
+                                            PushAppLogger.debug("PushApp", "Available tooltip targets: ${PlaceholderViewManager.getAllTooltipTargetIds()}")
                                             
                                             if (tooltipTarget != null) {
                                                 // Display tooltip at registered target position
-                                                Log.d("PushApp", "✅ Found registered tooltip target: $target")
-                                                Log.d("PushApp", "Target coordinates: x=${tooltipTarget.x}, y=${tooltipTarget.y}, width=${tooltipTarget.width}, height=${tooltipTarget.height}")
+                                                PushAppLogger.debug("PushApp", "✅ Found registered tooltip target: $target")
+                                                PushAppLogger.debug("PushApp", "Target coordinates: x=${tooltipTarget.x}, y=${tooltipTarget.y}, width=${tooltipTarget.width}, height=${tooltipTarget.height}")
                                                 currentActivityRef?.get()?.let { activity ->
                                                     activity.runOnUiThread {
                                                         InAppDisplay(activity).showTooltipAtPosition(
@@ -933,7 +1063,7 @@ class PushApp private constructor() {
                                                 }
                                             } else {
                                                 // Fallback to emitting tooltip event (for other tooltip systems)
-                                                Log.d("PushApp", "No registered tooltip target found for: $target, emitting tooltip event")
+                                                PushAppLogger.debug("PushApp", "No registered tooltip target found for: $target, emitting tooltip event")
                                                 PushAppEvents.emitTooltip(
                                                     TooltipEvent(
                                                         target = target,
@@ -962,7 +1092,7 @@ class PushApp private constructor() {
 
                                         // Inline: route to registered placeholder (after overlays, like iOS)
                                         if (layoutCode.contains("inline", ignoreCase = true) && placeholderId.isNotBlank()) {
-                                            Log.d("PushApp", "Queued inline for placeholder: $placeholderId")
+                                            PushAppLogger.debug("PushApp", "Queued inline for placeholder: $placeholderId")
                                             inlineItems.add(Triple(placeholderId, messageId, html))
                                             continue
                                         }
@@ -981,12 +1111,12 @@ class PushApp private constructor() {
                                             )
                                         )
 
-                                        Log.d("PushApp", "Overlay items queued: ${overlayItems.size}, inline: ${inlineItems.size}")
+                                        PushAppLogger.debug("PushApp", "Overlay items queued: ${overlayItems.size}, inline: ${inlineItems.size}")
                                     }
 
                                     val dispatchInlineItems = {
                                         for ((placeholderId, messageId, html) in inlineItems) {
-                                            Log.d("PushApp", "Dispatching to placeholder: $placeholderId")
+                                            PushAppLogger.debug("PushApp", "Dispatching to placeholder: $placeholderId")
                                             ackInApp(messageId)
                                             PushAppPlaceholderManager.dispatchPlaceholderContent(
                                                 placeholderId,
@@ -998,18 +1128,18 @@ class PushApp private constructor() {
 
                                     val activity = currentActivityRef?.get()
                                     if (activity == null) {
-                                        Log.w("PushApp", "No activity for in-app display")
+                                        PushAppLogger.warn("PushApp", "No activity for in-app display")
                                         dispatchInlineItems()
                                     } else if (overlayItems.isNotEmpty()) {
                                         try {
-                                            Log.d("PushApp", "Displaying ${overlayItems.size} overlay in-app items")
+                                            PushAppLogger.debug("PushApp", "Displaying ${overlayItems.size} overlay in-app items")
                                             activity.runOnUiThread {
                                                 InAppDisplay(activity).showInApps(overlayItems) {
                                                     dispatchInlineItems()
                                                 }
                                             }
                                         } catch (e: Exception) {
-                                            Log.e("PushApp", "Error showing in-app: ${e.message}")
+                                            PushAppLogger.error("PushApp", "Error showing in-app: ${e.message}")
                                             dispatchInlineItems()
                                         }
                                     } else {
@@ -1017,23 +1147,23 @@ class PushApp private constructor() {
                                     }
 
                                     if (overlayItems.isEmpty() && inlineItems.isEmpty()) {
-                                        Log.w("PushApp", "No valid in-app items to display")
+                                        PushAppLogger.warn("PushApp", "No valid in-app items to display")
                                     }
                                 } else {
-                                    Log.w("PushApp", "No in-app notification results found")
+                                    PushAppLogger.warn("PushApp", "No in-app notification results found")
                                 }
                             } else {
-                                Log.w("PushApp", "Poll in-app returned success=false")
+                                PushAppLogger.warn("PushApp", "Poll in-app returned success=false")
                             }
                         } catch (e: Exception) {
-                            Log.e("PushApp", "Error parsing poll in-app response: ${e.message}")
+                            PushAppLogger.error("PushApp", "Error parsing poll in-app response: ${e.message}")
                         }
                     } else {
-                        Log.w("PushApp", "Empty poll in-app response body")
+                        PushAppLogger.warn("PushApp", "Empty poll in-app response body")
                     }
                 } else {
-                    Log.e("PushApp", "Poll in-app failed: HTTP ${response.code}")
-                    Log.e("PushApp", "Response Body: $responseBody")
+                    PushAppLogger.error("PushApp", "Poll in-app failed: HTTP ${response.code}")
+                    PushAppLogger.error("PushApp", "Response Body: $responseBody")
                 }
                 response.close()
             }
@@ -1054,7 +1184,7 @@ class PushApp private constructor() {
         eventJson.put("event_data", JSONObject(eventData))
         bufferJsonArray.put(eventJson)
         sharedPrefs.edit().putString("event_buffer", bufferJsonArray.toString()).apply()
-        Log.d("PushApp", "Buffered event: $eventName")
+        PushAppLogger.debug("PushApp", "Buffered event: $eventName")
     }
 
     private fun flushBufferedEvents() {
@@ -1063,7 +1193,7 @@ class PushApp private constructor() {
         val bufferJsonArray = JSONArray(sharedPrefs.getString("event_buffer", "[]"))
         if (bufferJsonArray.length() == 0) return
 
-        Log.d("PushApp", "Flushing ${bufferJsonArray.length()} buffered events")
+        PushAppLogger.debug("PushApp", "Flushing ${bufferJsonArray.length()} buffered events")
         for (i in 0 until bufferJsonArray.length()) {
             val item = bufferJsonArray.getJSONObject(i)
             val eventName = item.getString("event_name")
@@ -1079,25 +1209,32 @@ class PushApp private constructor() {
 
     private fun connectSocket() {
         val id = userId ?: guestId ?: run {
-            Log.d("PushApp", "No userId or guestId available to connect socket")
+            PushAppLogger.debug("PushApp", "No userId or guestId available to connect socket")
             return
         }
 
         webSocketManager?.disconnect()
         webSocketManager = WebSocketManager(id, tenant, sandbox) { data ->
-            Log.d("PushApp", "WebSocket received data: $data")
+            PushAppLogger.debug("PushApp", "WebSocket received data: $data")
             handleSocketMessage(data)
         }
         webSocketManager?.connect()
     }
 
     fun handleNotification(data: Map<String, String>) {
-        Log.d("PushApp", "Handling notification data: $data")
+        PushAppLogger.debug("PushApp", "Handling notification data: $data")
 
         val type = data["type"]?.lowercase()
         if (type == "in_app") {
-            handleSocketNotification(data)
-            return
+            val activity = currentActivityRef?.get()
+            if (activity != null) {
+                handleSocketNotification(data)
+                return
+            }
+            PushAppLogger.warn(
+                "PushApp",
+                "in_app FCM received with no foreground activity — showing system notification fallback",
+            )
         }
 
         PushNotificationDisplay.displayFromData(context, data)
@@ -1115,7 +1252,7 @@ class PushApp private constructor() {
 
     fun handleSocketNotification(data: Map<String, String>) {
         val activity = currentActivityRef?.get() ?: run {
-            Log.w("PushApp", "No active activity available to show in-app notification")
+            PushAppLogger.warn("PushApp", "No active activity available to show in-app notification")
             return
         }
 
@@ -1176,18 +1313,18 @@ class PushApp private constructor() {
                             val inAppDisplay = InAppDisplay(activity)
                             inAppDisplay.showInApps(inAppItems) // Sequential display
                         } catch (e: Exception) {
-                            Log.e("PushApp", "Error showing in-app notification: ${e.message}")
+                            PushAppLogger.error("PushApp", "Error showing in-app notification: ${e.message}")
                         }
                     }
                 } else {
-                    Log.w("PushApp", "No valid in-app items found in socket notification")
+                    PushAppLogger.warn("PushApp", "No valid in-app items found in socket notification")
                 }
 
             } catch (e: Exception) {
-                Log.e("PushApp", "Failed to parse in-app data: ${e.message}")
+                PushAppLogger.error("PushApp", "Failed to parse in-app data: ${e.message}")
             }
         } else {
-            Log.d("PushApp", "Notification is not in-app or data is missing")
+            PushAppLogger.debug("PushApp", "Notification is not in-app or data is missing")
         }
     }
 

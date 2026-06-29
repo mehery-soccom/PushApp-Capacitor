@@ -43,10 +43,34 @@ This template is integrated with ESLint, Prettier, and SwiftLint. Using these to
 
 ## Publishing
 
-There is a `prepublishOnly` hook in `package.json` which prepares the plugin before publishing, so all you need to do is run:
+There is a `prepublishOnly` hook in `package.json` which prepares the plugin before publishing.
+
+See **[docs/RELEASE.md](docs/RELEASE.md)** for the full semver policy, tag checklist, and npm publish steps.
+
+Quick path:
 
 ```shell
-npm publish
+npm run lint && npm test && npm run test:contract && npm run verify
+npm publish --access public
 ```
 
 > **Note**: The [`files`](https://docs.npmjs.com/cli/v7/configuring-npm/package-json#files) array in `package.json` specifies which files get published. If you rename files/directories or add files elsewhere, you may need to update it.
+
+### Release tags
+
+Pushing a tag `vX.Y.Z` triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml), which validates the version, runs tests, and creates a GitHub Release from `CHANGELOG.md`.
+
+```shell
+git tag -a v0.1.1 -m "pushapp-ionic 0.1.1"
+git push origin v0.1.1
+```
+
+### Dependency audit
+
+Before major releases, run:
+
+```shell
+npm run audit:deps
+```
+
+See [docs/dependencies.md](docs/dependencies.md) for the SBOM summary.

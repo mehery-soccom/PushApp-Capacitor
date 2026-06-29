@@ -1,11 +1,11 @@
 import { WebPlugin } from '@capacitor/core';
-import type { PushAppPlugin, PlaceholderRegisterOptions, UIOptions } from './definitions'; // ⭐️ Ensure UIOptions is imported if used in definitions
+
+import type { PushAppPlugin, PlaceholderRegisterOptions, UIOptions } from './definitions';
 
 // Use a combined type for placeholder/target registration parameters
 interface TargetRegistrationOptions extends UIOptions {
-    targetId: string;
+  targetId: string;
 }
-
 
 export class PushAppWeb extends WebPlugin implements PushAppPlugin {
   async initialize(
@@ -15,7 +15,11 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     return { status: 'web_not_supported' };
   }
 
-  async register(options: { apnsToken?: string; fcmToken?: string; token?: string }): Promise<{ status: string; success: boolean }> {
+  async register(options: {
+    apnsToken?: string;
+    fcmToken?: string;
+    token?: string;
+  }): Promise<{ status: string; success: boolean }> {
     console.log('Web implementation - register', options);
     return { status: 'web_not_supported', success: false };
   }
@@ -25,7 +29,16 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     return { status: 'web_not_supported' };
   }
 
-  async saveUserData(options: { code: string; additionalInfo: Record<string, unknown>; cohorts: Record<string, unknown> }): Promise<{ status: string; success: boolean }> {
+  async logout(): Promise<{ status: string }> {
+    console.log('Web implementation - logout');
+    return { status: 'web_not_supported' };
+  }
+
+  async saveUserData(options: {
+    code: string;
+    additionalInfo: Record<string, unknown>;
+    cohorts: Record<string, unknown>;
+  }): Promise<{ status: string; success: boolean }> {
     console.log('Web implementation - saveUserData', options);
     return { status: 'web_not_supported', success: false };
   }
@@ -59,7 +72,7 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     console.log('Web implementation - unregisterPlaceholder', options);
     return { status: 'web_not_supported' };
   }
-  
+
   // ⭐️ NEW: Implement registerTooltipTarget
   async registerTooltipTarget(options: TargetRegistrationOptions): Promise<{ status: string }> {
     console.log('Web implementation - registerTooltipTarget', options);
@@ -74,7 +87,11 @@ export class PushAppWeb extends WebPlugin implements PushAppPlugin {
     return { status: 'web_not_supported' };
   }
 
-  async trackPushNotificationEvent(options: { token: string; event: string; ctaId?: string }): Promise<{ success: boolean }> {
+  async trackPushNotificationEvent(options: {
+    token: string;
+    event: string;
+    ctaId?: string;
+  }): Promise<{ success: boolean }> {
     console.log('Web implementation - trackPushNotificationEvent', options);
     return { success: false };
   }

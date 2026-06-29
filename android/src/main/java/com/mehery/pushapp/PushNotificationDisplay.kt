@@ -40,6 +40,17 @@ object PushNotificationDisplay {
     }
 
     fun displayFromData(context: Context, data: Map<String, String>) {
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !notificationManager.areNotificationsEnabled()) {
+            Log.e(
+                TAG,
+                "Notifications are disabled — on Android 13+ grant POST_NOTIFICATIONS when the app prompts, " +
+                    "or enable notifications in system settings",
+            )
+            return
+        }
+
         if (isLiveActivity(data)) {
             displayLiveActivity(context, data)
             return
@@ -65,12 +76,14 @@ object PushNotificationDisplay {
 
     private fun extractTitle(data: Map<String, String>): String? =
         data["title"]?.takeIf { it.isNotBlank() }
+            ?: data["notification_title"]?.takeIf { it.isNotBlank() }
             ?: data["gcm.notification.title"]?.takeIf { it.isNotBlank() }
 
     private fun extractBody(data: Map<String, String>): String? =
         data["body"]?.takeIf { it.isNotBlank() }
             ?: data["message"]?.takeIf { it.isNotBlank() }
             ?: data["text"]?.takeIf { it.isNotBlank() }
+            ?: data["notification_body"]?.takeIf { it.isNotBlank() }
             ?: data["gcm.notification.body"]?.takeIf { it.isNotBlank() }
 
     private fun extractImageUrl(data: Map<String, String>): String? =

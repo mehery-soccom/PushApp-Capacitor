@@ -5,20 +5,30 @@ import Capacitor
 @objc(PushAppPlugin)
 public class PushAppPlugin: CAPPlugin {
 
+    private func reject(_ call: CAPPluginCall, code: String) {
+        call.reject(PushAppErrorCodes.message(for: code), code)
+    }
+
     // MARK: - initialize
     @objc func initialize(_ call: CAPPluginCall) {
         let appId = call.getString("appId") ?? call.getString("identifier")
         guard let appId = appId else {
-            call.reject("appId is required (channel id / App ID; identifier is accepted as a deprecated alias)")
+            reject(call, code: PushAppErrorCodes.appIdRequired)
             return
         }
 
         let sandbox = call.getBool("sandbox") ?? false
+        let debugMode = call.getBool("debugMode") ?? false
         let slackWebhookUrl = call.getString("slackWebhookUrl")
 
-        let initialized = PushApp.shared.initialize(appId: appId, sandbox: sandbox, slackWebhookUrl: slackWebhookUrl)
+        let initialized = PushApp.shared.initialize(
+            appId: appId,
+            sandbox: sandbox,
+            slackWebhookUrl: slackWebhookUrl,
+            debugMode: debugMode
+        )
         if !initialized {
-            call.reject("Initialize failed. Check Xcode console for PushApp errors (invalid appId or setup issue).")
+            reject(call, code: PushAppErrorCodes.invalidAppId)
             return
         }
 
@@ -31,12 +41,11 @@ public class PushAppPlugin: CAPPlugin {
     @objc func register(_ call: CAPPluginCall) {
         let apnsToken = call.getString("apnsToken") ?? call.getString("token")
         guard let apnsToken = apnsToken, !apnsToken.isEmpty else {
-            call.reject("apnsToken is required on iOS")
+            reject(call, code: PushAppErrorCodes.emptyToken)
             return
         }
         if !PushApp.shared.isInitialized {
-            print("PushAppPlugin: register() called before initialize()")
-            call.reject("Call PushApp.initialize() before register()")
+            reject(call, code: PushAppErrorCodes.notInitialized)
             return
         }
         let fcmToken = call.getString("fcmToken")
@@ -44,27 +53,47 @@ public class PushAppPlugin: CAPPlugin {
             if success {
                 call.resolve(["status": "registered", "success": true])
             } else {
-                call.reject("Device register failed. Ensure initialize() was called first and the token is valid.")
+                self.reject(call, code: PushAppErrorCodes.registerFailed)
             }
         }
     }
 
     // MARK: - login
     @objc func login(_ call: CAPPluginCall) {
-        guard let userId = call.getString("userId") else {
-            call.reject("userId is required")
+        guard let userId = call.getString("userId"), !userId.isEmpty else {
+            reject(call, code: PushAppErrorCodes.emptyUserId)
+            return
+        }
+
+        if !PushApp.shared.isInitialized {
+            reject(call, code: PushAppErrorCodes.notInitialized)
             return
         }
 
         let loggedIn = PushApp.shared.login(userId: userId)
         if !loggedIn {
-            call.reject("Call PushApp.initialize() then register() before login(). See Xcode console tag PushApp.")
+            reject(call, code: PushAppErrorCodes.loginFailed)
             return
         }
 
         call.resolve([
             "status": "logged_in"
         ])
+    }
+
+    @objc func logout(_ call: CAPPluginCall) {
+        if !PushApp.shared.isInitialized {
+            reject(call, code: PushAppErrorCodes.notInitialized)
+            return
+        }
+
+        PushApp.shared.logout { success in
+            if success {
+                call.resolve(["status": "logged_out"])
+            } else {
+                self.reject(call, code: PushAppErrorCodes.logoutFailed)
+            }
+        }
     }
 
     @objc func ping(_ call: CAPPluginCall) {
@@ -78,31 +107,26 @@ public class PushAppPlugin: CAPPlugin {
 
     
     @objc func saveUserData(_ call: CAPPluginCall) {
-        print("🔔 saveUserData called with code: \(call.getString("code"))")
-        print("🔔 saveUserData called with additionalInfo: \(call.getAny("additionalInfo"))")
-        print("🔔 saveUserData called with cohorts: \(call.getAny("cohorts"))")
-        guard let code = call.getString("code") else {
-            call.reject("code is required (e.g. userId_deviceId)")
+        PushAppLogger.debug("saveUserData called")
+        guard let code = call.getString("code"), !code.isEmpty else {
+            reject(call, code: PushAppErrorCodes.missingCode)
             return
         }
-        guard let additionalInfo = call.getAny("additionalInfo") else {
-            call.reject("additionalInfo is required")
-            return
-        }
-        guard let cohorts = call.getAny("cohorts") else {
-            call.reject("cohorts is required")
+        guard let additionalInfo = call.getAny("additionalInfo"),
+              let cohorts = call.getAny("cohorts") else {
+            reject(call, code: PushAppErrorCodes.missingProfileData)
             return
         }
         guard let additionalInfoDict = additionalInfo as? [String: Any],
               let cohortsDict = cohorts as? [String: Any] else {
-            call.reject("additionalInfo and cohorts must be objects")
+            reject(call, code: PushAppErrorCodes.invalidProfileData)
             return
         }
         PushApp.shared.updateCustomerProfile(code: code, cohorts: cohortsDict, additionalInfo: additionalInfoDict) { success in
             if success {
                 call.resolve(["status": "saved_user_data", "success": true])
             } else {
-                call.reject("Customer profile update failed")
+                self.reject(call, code: PushAppErrorCodes.customerProfileFailed)
             }
         }
     }
@@ -116,12 +140,12 @@ public class PushAppPlugin: CAPPlugin {
     // MARK: - send event
     @objc func sendEvent(_ call: CAPPluginCall) {
         guard let eventName = call.getString("eventName") else {
-            call.reject("eventName is required")
+            reject(call, code: PushAppErrorCodes.missingEventName)
             return
         }
         
         guard let eventData = call.getObject("eventData") as? [String: Any] else {
-            call.reject("eventData is required and must be an object")
+            reject(call, code: PushAppErrorCodes.missingEventData)
             return
         }
         
@@ -135,7 +159,7 @@ public class PushAppPlugin: CAPPlugin {
     // MARK: - set page name
     @objc func setPageName(_ call: CAPPluginCall) {
         guard let pageName = call.getString("pageName") else {
-            call.reject("pageName is required")
+            reject(call, code: PushAppErrorCodes.missingPageName)
             return
         }
         
@@ -158,7 +182,7 @@ public class PushAppPlugin: CAPPlugin {
           let y = call.getFloat("y"),
           let width = call.getFloat("width"),
           let height = call.getFloat("height") else {
-        call.reject("placeholderId, x, y, width, and height are required")
+            reject(call, code: PushAppErrorCodes.missingUiBounds)
         return
     }
 
@@ -185,7 +209,7 @@ public class PushAppPlugin: CAPPlugin {
               let y = call.getFloat("y"),
               let width = call.getFloat("width"),
               let height = call.getFloat("height") else {
-            call.reject("placeholderId, x, y, width, and height are required")
+                reject(call, code: PushAppErrorCodes.missingUiBounds)
             return
         }
 
@@ -206,8 +230,8 @@ public class PushAppPlugin: CAPPlugin {
 
     // MARK: - unregister placeholder
     @objc func unregisterPlaceholder(_ call: CAPPluginCall) {
-        guard let placeholderId = call.getString("placeholderId") else {
-            call.reject("placeholderId is required")
+        guard let placeholderId = call.getString("placeholderId"), !placeholderId.isEmpty else {
+            reject(call, code: PushAppErrorCodes.missingPlaceholderId)
             return
         }
 
@@ -225,7 +249,7 @@ public class PushAppPlugin: CAPPlugin {
               let y = call.getFloat("y"),
               let width = call.getFloat("width"),
               let height = call.getFloat("height") else {
-            call.reject("targetId, x, y, width, and height are required")
+            reject(call, code: PushAppErrorCodes.missingUiBounds)
             return
         }
 
@@ -245,8 +269,8 @@ public class PushAppPlugin: CAPPlugin {
     
     // MARK: - ⭐️ NEW: unregister tooltip target
     @objc func unregisterTooltipTarget(_ call: CAPPluginCall) {
-        guard let targetId = call.getString("targetId") else {
-            call.reject("targetId is required")
+        guard let targetId = call.getString("targetId"), !targetId.isEmpty else {
+            reject(call, code: PushAppErrorCodes.missingTargetId)
             return
         }
 
@@ -259,12 +283,12 @@ public class PushAppPlugin: CAPPlugin {
 
     // MARK: - track push notification event
     @objc func trackPushNotificationEvent(_ call: CAPPluginCall) {
-        guard let token = call.getString("token") else {
-            call.reject("token is required")
+        guard let token = call.getString("token"), !token.isEmpty else {
+            reject(call, code: PushAppErrorCodes.missingNotificationToken)
             return
         }
-        guard let event = call.getString("event") else {
-            call.reject("event is required")
+        guard let event = call.getString("event"), !event.isEmpty else {
+            reject(call, code: PushAppErrorCodes.missingNotificationEvent)
             return
         }
         let ctaId = call.getString("ctaId")

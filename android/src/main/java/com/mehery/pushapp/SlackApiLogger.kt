@@ -1,6 +1,5 @@
 package com.mehery.pushapp
 
-import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -12,13 +11,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Posts PushApp API request/response details to Slack with rate limiting.
- * Configure via [configure] from PushApp.initialize (pass slackWebhookUrl from JS).
+ * Opt-in API telemetry to a Slack Incoming Webhook (integration debugging only).
+ * Enabled only when a valid [slackWebhookUrl] is passed to PushApp.initialize().
+ * Request/response bodies and headers are redacted before posting.
  */
 object SlackApiLogger {
     private const val TAG = "SlackApiLogger"
-    private const val FALLBACK_WEBHOOK_URL =
-        "https://hooks.slack.com/services/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"
     private const val MIN_INTERVAL_MS = 2500L
     private const val MAX_PER_MINUTE = 12
     private const val MAX_FIELD_CHARS = 2000
@@ -49,22 +47,20 @@ object SlackApiLogger {
     fun configure(webhookUrl: String?) {
         disabled = false
         val trimmed = webhookUrl?.trim().orEmpty()
-        this.webhookUrl = resolveWebhookUrl(trimmed)
-            ?: resolveWebhookUrl(FALLBACK_WEBHOOK_URL)
-            ?: ""
+        this.webhookUrl = resolveWebhookUrl(trimmed).orEmpty()
         when {
             this.webhookUrl.isNotEmpty() -> {
-                Log.d(TAG, "Slack API logging enabled")
+                PushAppLogger.debug(TAG, "Slack API logging enabled (opt-in)")
                 postConfiguredPing()
             }
             trimmed.isNotEmpty() ->
-                Log.e(
+                PushAppLogger.error(
                     TAG,
-                    "Invalid slackWebhookUrl: \"$trimmed\". Use a real Incoming Webhook URL from " +
+                    "Invalid slackWebhookUrl. Use a real Incoming Webhook URL from " +
                         "Slack → Apps → Incoming Webhooks. API logs will not be sent.",
                 )
             else ->
-                Log.d(TAG, "Slack API logging disabled (no valid webhook URL)")
+                PushAppLogger.debug(TAG, "Slack API logging disabled (no webhook URL provided)")
         }
     }
 
@@ -100,7 +96,7 @@ object SlackApiLogger {
         if (webhookUrl.isBlank() || disabled) {
             return
         }
-        Log.d(TAG, "Queue Slack API log: $method $url")
+        PushAppLogger.debug(TAG, "Queue Slack API log: $method $url")
         executor.execute {
             val message = buildMessage(
                 platform = platform,
@@ -161,16 +157,16 @@ object SlackApiLogger {
                     toSend.retries++
                     if (toSend.retries <= MAX_SLACK_POST_RETRIES) {
                         pendingMessages.addFirst(toSend)
-                        Log.w(TAG, "Slack post failed; retry ${toSend.retries}/$MAX_SLACK_POST_RETRIES")
+                        PushAppLogger.warn(TAG, "Slack post failed; retry ${toSend.retries}/$MAX_SLACK_POST_RETRIES")
                         scheduleDrainDelayed()
                     } else {
-                        Log.e(TAG, "Slack post dropped after $MAX_SLACK_POST_RETRIES retries")
+                        PushAppLogger.error(TAG, "Slack post dropped after $MAX_SLACK_POST_RETRIES retries")
                     }
                 }
                 PostResult.PermanentFailure -> {
                     pendingMessages.clear()
                     disabled = true
-                    Log.e(TAG, "Slack webhook rejected; API logging disabled for this session")
+                    PushAppLogger.error(TAG, "Slack webhook rejected; API logging disabled for this session")
                 }
             }
             Unit
@@ -207,18 +203,14 @@ object SlackApiLogger {
             slackClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
                 if (response.isSuccessful) {
-                    Log.d(TAG, "Slack API log posted (${response.code})")
+                    PushAppLogger.debug(TAG, "Slack API log posted (${response.code})")
                     return PostResult.Success
                 }
-                Log.e(
-                    TAG,
-                    "Slack webhook HTTP ${response.code} — $responseBody",
-                )
+                PushAppLogger.error(TAG, "Slack webhook HTTP ${response.code}")
                 if (response.code in 400..499 && response.code != 429) {
-                    Log.e(
+                    PushAppLogger.error(
                         TAG,
-                        "Slack webhook is invalid or revoked (e.g. no_team / no_service). " +
-                            "Create a new Incoming Webhook and pass slackWebhookUrl in PushApp.initialize().",
+                        "Slack webhook is invalid or revoked. Pass a valid slackWebhookUrl in PushApp.initialize().",
                     )
                     PostResult.PermanentFailure
                 } else {
@@ -226,7 +218,7 @@ object SlackApiLogger {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to post API log to Slack: ${e.message}", e)
+            PushAppLogger.error(TAG, "Failed to post API log to Slack: ${e.message}", e)
             PostResult.Retry
         }
     }
@@ -245,24 +237,48 @@ object SlackApiLogger {
         val sb = StringBuilder()
         sb.append("[").append(platform).append(" API] ").append(method).append(" ").append(url)
         sb.append("\n\nRequest headers:\n")
-        sb.append(truncate(formatHeaders(requestHeaders), MAX_FIELD_CHARS))
+        sb.append(truncate(PushAppLogger.sanitize(formatHeaders(requestHeaders)), MAX_FIELD_CHARS))
         sb.append("\n\nRequest body:\n")
-        sb.append(truncate(requestBody?.ifBlank { "(empty)" } ?: "(none)", MAX_FIELD_CHARS))
+        sb.append(
+            truncate(
+                PushAppLogger.sanitize(requestBody?.ifBlank { "(empty)" } ?: "(none)"),
+                MAX_FIELD_CHARS,
+            ),
+        )
         if (error != null) {
-            sb.append("\n\nError:\n").append(truncate(error, MAX_FIELD_CHARS))
+            sb.append("\n\nError:\n").append(truncate(PushAppLogger.sanitize(error), MAX_FIELD_CHARS))
         } else {
             sb.append("\n\nResponse: ").append(statusCode?.toString() ?: "?")
             sb.append("\n\nResponse headers:\n")
-            sb.append(truncate(formatHeaders(responseHeaders ?: emptyMap()), MAX_FIELD_CHARS))
+            sb.append(
+                truncate(
+                    PushAppLogger.sanitize(formatHeaders(responseHeaders ?: emptyMap())),
+                    MAX_FIELD_CHARS,
+                ),
+            )
             sb.append("\n\nResponse body:\n")
-            sb.append(truncate(responseBody?.ifBlank { "(empty)" } ?: "(none)", MAX_FIELD_CHARS))
+            sb.append(
+                truncate(
+                    PushAppLogger.sanitize(responseBody?.ifBlank { "(empty)" } ?: "(none)"),
+                    MAX_FIELD_CHARS,
+                ),
+            )
         }
         return sb.toString()
     }
 
     private fun formatHeaders(headers: Map<String, String>): String {
         if (headers.isEmpty()) return "(none)"
-        return headers.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+        return headers.entries.joinToString("\n") { (key, value) ->
+            val redactedValue = if (key.equals("authorization", ignoreCase = true) ||
+                key.equals("x-device-id", ignoreCase = true)
+            ) {
+                "***REDACTED***"
+            } else {
+                value
+            }
+            "$key: $redactedValue"
+        }
     }
 
     private fun truncate(value: String, max: Int): String {

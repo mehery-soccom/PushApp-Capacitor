@@ -1,12 +1,11 @@
 /**
- * Slack Incoming Webhook for PushApp native API debug logs.
+ * Optional Slack Incoming Webhook for PushApp native API debug logs (development only).
  *
  * 1. Slack → Apps → Incoming Webhooks → Add to channel
- * 2. Copy the full URL (https://hooks.slack.com/services/T…/B…/…)
- * 3. Paste below — leave empty to disable Slack API logging
+ * 2. Set SLACK_WEBHOOK_URL in your local env or paste below for local dev
+ * 3. Never commit a real webhook URL to version control
  */
-export const SLACK_WEBHOOK_URL =
-  'https://hooks.slack.com/services/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';
+export const SLACK_WEBHOOK_URL = '';
 
 /** Pass to PushApp.initialize only when a real webhook URL is set. */
 export function slackWebhookInitOption(): { slackWebhookUrl?: string } {

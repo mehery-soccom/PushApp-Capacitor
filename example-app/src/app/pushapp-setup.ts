@@ -32,9 +32,13 @@ export async function registerPushAppDevice(fcmToken?: string): Promise<void> {
 export async function initializeAndRegisterPushApp(options: {
   appId: string;
   sandbox?: boolean;
+  debugMode?: boolean;
   slackWebhookUrl?: string;
 }): Promise<void> {
-  await PushApp.initialize(options);
+  await PushApp.initialize({
+    debugMode: true,
+    ...options,
+  });
   if (Capacitor.getPlatform() === 'android' || Capacitor.getPlatform() === 'ios') {
     await registerPushAppDevice();
   }
