@@ -58,8 +58,9 @@ jobs:
         id: changelog
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          awk -v ver="[${VERSION}]" '
-            $0 ~ "^## " ver { found=1; next }
+          HEADER="## [${VERSION}]"
+          awk -v header="$HEADER" '
+            index($0, header) == 1 { found=1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > /tmp/release-notes.md
