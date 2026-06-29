@@ -22,7 +22,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: |
+          npm install --legacy-peer-deps
+          npm install @rollup/rollup-linux-x64-gnu --no-save --legacy-peer-deps
 
       - name: ESLint
         run: npm run eslint
@@ -59,7 +61,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: |
+          npm install --legacy-peer-deps
+          npm install @rollup/rollup-linux-x64-gnu --no-save --legacy-peer-deps
 
       - name: Gradle unit tests
         run: cd android && ./gradlew test --no-daemon
@@ -76,7 +80,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: |
+          npm install --legacy-peer-deps
+          npm install @rollup/rollup-linux-x64-gnu --no-save --legacy-peer-deps
 
       - name: SwiftLint
         run: npm run swiftlint -- lint
